@@ -2,34 +2,55 @@ package usage
 
 import (
 	"context"
+	"errors"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	log "github.com/sirupsen/logrus"
 )
 
-// Record contains the usage statistics captured for a single provider request.
-type Record struct {
-	Provider     string
-	Model        string
-	APIKey       string
-	AuthID       string
-	AuthIndex    string
-	Source       string
-	RemoteIP     string
-	UserAgent    string
-	InputChars   int64
-	RequestedAt  time.Time
-	Latency      time.Duration
-	Failed       bool
-	StatusCode   int
-	ErrorReason  string
-	ErrorMessage string
-	Detail       Detail
+type requestMetadataKey struct{}
+
+// RequestMetadata carries per-downstream-request scheduling details into usage records.
+type RequestMetadata struct {
+	RequestCount                 uint64
+	RetryRound                   int
+	RoundDispatchIndex           int
+	ParallelEligible             bool
+	ProviderCooldownRemaining    int
+	ProviderCooldownGeneratedRaw float64
 }
 
-// Detail holds the token usage breakdown.
+// Record contains the usage statistics captured for a single provider request.
+type Record struct {
+	Provider                     string
+	Model                        string
+	UpstreamModel                string
+	APIKey                       string
+	AuthID                       string
+	AuthIndex                    string
+	Source                       string
+	UserAgent                    string
+	InputChars                   int64
+	RequestedAt                  time.Time
+	Latency                      time.Duration
+	Failed                       bool
+	StatusCode                   int
+	ErrorReason                  string
+	ErrorMessage                 string
+	RequestCount                 uint64
+	RetryRound                   int
+	RoundDispatchIndex           int
+	ParallelEligible             bool
+	ProviderCooldownRemaining    int
+	ProviderCooldownGeneratedRaw float64
+	Detail                       Detail
+}
+
+// Detail holds the token usage breakdown plus response metadata parsed with it.
 type Detail struct {
+	UpstreamModel              string
 	InputTokens                int64
 	OutputTokens               int64
 	ReasoningTokens            int64
@@ -192,6 +213,51 @@ func safeInvoke(plugin Plugin, ctx context.Context, record Record) {
 }
 
 var defaultManager = NewManager(512)
+
+var requestCounter atomic.Uint64
+
+var ErrParallelRequestAborted = errors.New("parallel upstream request aborted after another candidate succeeded")
+
+// EnsureRequestContext attaches a process-local downstream request count when missing.
+func EnsureRequestContext(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if MetadataFromContext(ctx).RequestCount > 0 {
+		return ctx
+	}
+	return WithRequestMetadata(ctx, RequestMetadata{RequestCount: requestCounter.Add(1)})
+}
+
+// CurrentRequestCount returns the latest process-local downstream request sequence.
+func CurrentRequestCount() uint64 {
+	return requestCounter.Load()
+}
+
+// IsParallelRequestAborted reports whether ctx was canceled because another parallel candidate succeeded.
+func IsParallelRequestAborted(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	return errors.Is(context.Cause(ctx), ErrParallelRequestAborted)
+}
+
+// WithRequestMetadata returns a context carrying usage request metadata.
+func WithRequestMetadata(ctx context.Context, metadata RequestMetadata) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, requestMetadataKey{}, metadata)
+}
+
+// MetadataFromContext returns request metadata previously attached to ctx.
+func MetadataFromContext(ctx context.Context) RequestMetadata {
+	if ctx == nil {
+		return RequestMetadata{}
+	}
+	metadata, _ := ctx.Value(requestMetadataKey{}).(RequestMetadata)
+	return metadata
+}
 
 // DefaultManager returns the global usage manager instance.
 func DefaultManager() *Manager { return defaultManager }

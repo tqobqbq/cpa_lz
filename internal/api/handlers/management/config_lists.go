@@ -154,16 +154,17 @@ func (h *Handler) PutGeminiKeys(c *gin.Context) {
 }
 func (h *Handler) PatchGeminiKey(c *gin.Context) {
 	type geminiKeyPatch struct {
-		APIKey         *string                    `json:"api-key"`
-		Priority       *int                       `json:"priority"`
-		Prefix         *string                    `json:"prefix"`
-		BaseURL        *string                    `json:"base-url"`
-		ProxyURL       *string                    `json:"proxy-url"`
-		BackoffMode    *string                    `json:"backoff-mode"`
-		RequestRetry   *int                       `json:"request-retry"`
-		ErrorControl   *config.ErrorControlPolicy `json:"error-control"`
-		Headers        *map[string]string         `json:"headers"`
-		ExcludedModels *[]string                  `json:"excluded-models"`
+		APIKey         *string                        `json:"api-key"`
+		Priority       *int                           `json:"priority"`
+		Prefix         *string                        `json:"prefix"`
+		BaseURL        *string                        `json:"base-url"`
+		ProxyURL       *string                        `json:"proxy-url"`
+		BackoffMode    *string                        `json:"backoff-mode"`
+		RequestRetry   *int                           `json:"request-retry"`
+		ErrorControl   *config.ErrorControlPolicy     `json:"error-control"`
+		Cooldown       *config.ProviderCooldownConfig `json:"cooldown"`
+		Headers        *map[string]string             `json:"headers"`
+		ExcludedModels *[]string                      `json:"excluded-models"`
 	}
 	var body struct {
 		Index *int            `json:"index"`
@@ -239,6 +240,9 @@ func (h *Handler) PatchGeminiKey(c *gin.Context) {
 	}
 	if body.Value.ErrorControl != nil {
 		entry.ErrorControl = normalizeErrorControlPolicy(*body.Value.ErrorControl)
+	}
+	if body.Value.Cooldown != nil {
+		entry.Cooldown = normalizeProviderCooldownConfig(*body.Value.Cooldown)
 	}
 	if body.Value.Headers != nil {
 		entry.Headers = config.NormalizeHeaders(*body.Value.Headers)
@@ -346,17 +350,18 @@ func (h *Handler) PutClaudeKeys(c *gin.Context) {
 }
 func (h *Handler) PatchClaudeKey(c *gin.Context) {
 	type claudeKeyPatch struct {
-		APIKey         *string                    `json:"api-key"`
-		Priority       *int                       `json:"priority"`
-		Prefix         *string                    `json:"prefix"`
-		BaseURL        *string                    `json:"base-url"`
-		ProxyURL       *string                    `json:"proxy-url"`
-		BackoffMode    *string                    `json:"backoff-mode"`
-		RequestRetry   *int                       `json:"request-retry"`
-		ErrorControl   *config.ErrorControlPolicy `json:"error-control"`
-		Models         *[]config.ClaudeModel      `json:"models"`
-		Headers        *map[string]string         `json:"headers"`
-		ExcludedModels *[]string                  `json:"excluded-models"`
+		APIKey         *string                        `json:"api-key"`
+		Priority       *int                           `json:"priority"`
+		Prefix         *string                        `json:"prefix"`
+		BaseURL        *string                        `json:"base-url"`
+		ProxyURL       *string                        `json:"proxy-url"`
+		BackoffMode    *string                        `json:"backoff-mode"`
+		RequestRetry   *int                           `json:"request-retry"`
+		ErrorControl   *config.ErrorControlPolicy     `json:"error-control"`
+		Cooldown       *config.ProviderCooldownConfig `json:"cooldown"`
+		Models         *[]config.ClaudeModel          `json:"models"`
+		Headers        *map[string]string             `json:"headers"`
+		ExcludedModels *[]string                      `json:"excluded-models"`
 	}
 	var body struct {
 		Index *int            `json:"index"`
@@ -423,6 +428,9 @@ func (h *Handler) PatchClaudeKey(c *gin.Context) {
 	}
 	if body.Value.ErrorControl != nil {
 		entry.ErrorControl = normalizeErrorControlPolicy(*body.Value.ErrorControl)
+	}
+	if body.Value.Cooldown != nil {
+		entry.Cooldown = normalizeProviderCooldownConfig(*body.Value.Cooldown)
 	}
 	if body.Value.Models != nil {
 		entry.Models = append([]config.ClaudeModel(nil), (*body.Value.Models)...)
@@ -543,6 +551,7 @@ func (h *Handler) PatchOpenAICompat(c *gin.Context) {
 		BackoffMode   *string                             `json:"backoff-mode"`
 		RequestRetry  *int                                `json:"request-retry"`
 		ErrorControl  *config.ErrorControlPolicy          `json:"error-control"`
+		Cooldown      *config.ProviderCooldownConfig      `json:"cooldown"`
 	}
 	var body struct {
 		Name  *string            `json:"name"`
@@ -623,6 +632,9 @@ func (h *Handler) PatchOpenAICompat(c *gin.Context) {
 	if body.Value.ErrorControl != nil {
 		entry.ErrorControl = normalizeErrorControlPolicy(*body.Value.ErrorControl)
 	}
+	if body.Value.Cooldown != nil {
+		entry.Cooldown = normalizeProviderCooldownConfig(*body.Value.Cooldown)
+	}
 	normalizeOpenAICompatibilityEntry(&entry)
 	h.cfg.OpenAICompatibility[targetIndex] = entry
 	h.cfg.SanitizeOpenAICompatibility()
@@ -698,17 +710,18 @@ func (h *Handler) PutVertexCompatKeys(c *gin.Context) {
 }
 func (h *Handler) PatchVertexCompatKey(c *gin.Context) {
 	type vertexCompatPatch struct {
-		APIKey         *string                     `json:"api-key"`
-		Priority       *int                        `json:"priority"`
-		Prefix         *string                     `json:"prefix"`
-		BaseURL        *string                     `json:"base-url"`
-		ProxyURL       *string                     `json:"proxy-url"`
-		BackoffMode    *string                     `json:"backoff-mode"`
-		RequestRetry   *int                        `json:"request-retry"`
-		ErrorControl   *config.ErrorControlPolicy  `json:"error-control"`
-		Headers        *map[string]string          `json:"headers"`
-		Models         *[]config.VertexCompatModel `json:"models"`
-		ExcludedModels *[]string                   `json:"excluded-models"`
+		APIKey         *string                        `json:"api-key"`
+		Priority       *int                           `json:"priority"`
+		Prefix         *string                        `json:"prefix"`
+		BaseURL        *string                        `json:"base-url"`
+		ProxyURL       *string                        `json:"proxy-url"`
+		BackoffMode    *string                        `json:"backoff-mode"`
+		RequestRetry   *int                           `json:"request-retry"`
+		ErrorControl   *config.ErrorControlPolicy     `json:"error-control"`
+		Cooldown       *config.ProviderCooldownConfig `json:"cooldown"`
+		Headers        *map[string]string             `json:"headers"`
+		Models         *[]config.VertexCompatModel    `json:"models"`
+		ExcludedModels *[]string                      `json:"excluded-models"`
 	}
 	var body struct {
 		Index *int               `json:"index"`
@@ -791,6 +804,9 @@ func (h *Handler) PatchVertexCompatKey(c *gin.Context) {
 	}
 	if body.Value.ErrorControl != nil {
 		entry.ErrorControl = normalizeErrorControlPolicy(*body.Value.ErrorControl)
+	}
+	if body.Value.Cooldown != nil {
+		entry.Cooldown = normalizeProviderCooldownConfig(*body.Value.Cooldown)
 	}
 	if body.Value.Headers != nil {
 		entry.Headers = config.NormalizeHeaders(*body.Value.Headers)
@@ -1086,18 +1102,19 @@ func (h *Handler) PutCodexKeys(c *gin.Context) {
 }
 func (h *Handler) PatchCodexKey(c *gin.Context) {
 	type codexKeyPatch struct {
-		APIKey         *string                    `json:"api-key"`
-		Priority       *int                       `json:"priority"`
-		Prefix         *string                    `json:"prefix"`
-		BaseURL        *string                    `json:"base-url"`
-		UseV1          *bool                      `json:"use-v1"`
-		ProxyURL       *string                    `json:"proxy-url"`
-		BackoffMode    *string                    `json:"backoff-mode"`
-		RequestRetry   *int                       `json:"request-retry"`
-		ErrorControl   *config.ErrorControlPolicy `json:"error-control"`
-		Models         *[]config.CodexModel       `json:"models"`
-		Headers        *map[string]string         `json:"headers"`
-		ExcludedModels *[]string                  `json:"excluded-models"`
+		APIKey         *string                        `json:"api-key"`
+		Priority       *int                           `json:"priority"`
+		Prefix         *string                        `json:"prefix"`
+		BaseURL        *string                        `json:"base-url"`
+		UseV1          *bool                          `json:"use-v1"`
+		ProxyURL       *string                        `json:"proxy-url"`
+		BackoffMode    *string                        `json:"backoff-mode"`
+		RequestRetry   *int                           `json:"request-retry"`
+		ErrorControl   *config.ErrorControlPolicy     `json:"error-control"`
+		Cooldown       *config.ProviderCooldownConfig `json:"cooldown"`
+		Models         *[]config.CodexModel           `json:"models"`
+		Headers        *map[string]string             `json:"headers"`
+		ExcludedModels *[]string                      `json:"excluded-models"`
 	}
 	var body struct {
 		Index *int           `json:"index"`
@@ -1174,6 +1191,9 @@ func (h *Handler) PatchCodexKey(c *gin.Context) {
 	}
 	if body.Value.ErrorControl != nil {
 		entry.ErrorControl = normalizeErrorControlPolicy(*body.Value.ErrorControl)
+	}
+	if body.Value.Cooldown != nil {
+		entry.Cooldown = normalizeProviderCooldownConfig(*body.Value.Cooldown)
 	}
 	if body.Value.Models != nil {
 		entry.Models = append([]config.CodexModel(nil), (*body.Value.Models)...)
@@ -1253,6 +1273,7 @@ func normalizeOpenAICompatibilityEntry(entry *config.OpenAICompatibility) {
 	entry.Headers = config.NormalizeHeaders(entry.Headers)
 	normalizeBackoffSettings(&entry.BackoffMode, &entry.RequestRetry)
 	entry.ErrorControl = normalizeErrorControlPolicy(entry.ErrorControl)
+	entry.Cooldown = normalizeProviderCooldownConfig(entry.Cooldown)
 	existing := make(map[string]struct{}, len(entry.APIKeyEntries))
 	for i := range entry.APIKeyEntries {
 		trimmed := strings.TrimSpace(entry.APIKeyEntries[i].APIKey)
@@ -1275,6 +1296,7 @@ func normalizeGeminiKey(entry *config.GeminiKey) {
 	entry.ExcludedModels = config.NormalizeExcludedModels(entry.ExcludedModels)
 	normalizeBackoffSettings(&entry.BackoffMode, &entry.RequestRetry)
 	entry.ErrorControl = normalizeErrorControlPolicy(entry.ErrorControl)
+	entry.Cooldown = normalizeProviderCooldownConfig(entry.Cooldown)
 	if len(entry.Models) == 0 {
 		return
 	}
@@ -1317,6 +1339,7 @@ func normalizeClaudeKey(entry *config.ClaudeKey) {
 	entry.ProxyURL = strings.TrimSpace(entry.ProxyURL)
 	normalizeBackoffSettings(&entry.BackoffMode, &entry.RequestRetry)
 	entry.ErrorControl = normalizeErrorControlPolicy(entry.ErrorControl)
+	entry.Cooldown = normalizeProviderCooldownConfig(entry.Cooldown)
 	entry.Headers = config.NormalizeHeaders(entry.Headers)
 	entry.ExcludedModels = config.NormalizeExcludedModels(entry.ExcludedModels)
 	if len(entry.Models) == 0 {
@@ -1358,6 +1381,7 @@ func normalizeCodexKey(entry *config.CodexKey) {
 	entry.ProxyURL = strings.TrimSpace(entry.ProxyURL)
 	normalizeBackoffSettings(&entry.BackoffMode, &entry.RequestRetry)
 	entry.ErrorControl = normalizeErrorControlPolicy(entry.ErrorControl)
+	entry.Cooldown = normalizeProviderCooldownConfig(entry.Cooldown)
 	entry.Headers = config.NormalizeHeaders(entry.Headers)
 	entry.ExcludedModels = config.NormalizeExcludedModels(entry.ExcludedModels)
 	if len(entry.Models) == 0 {
@@ -1386,6 +1410,7 @@ func normalizeVertexCompatKey(entry *config.VertexCompatKey) {
 	entry.ProxyURL = strings.TrimSpace(entry.ProxyURL)
 	normalizeBackoffSettings(&entry.BackoffMode, &entry.RequestRetry)
 	entry.ErrorControl = normalizeErrorControlPolicy(entry.ErrorControl)
+	entry.Cooldown = normalizeProviderCooldownConfig(entry.Cooldown)
 	entry.Headers = config.NormalizeHeaders(entry.Headers)
 	entry.ExcludedModels = config.NormalizeExcludedModels(entry.ExcludedModels)
 	if len(entry.Models) == 0 {
@@ -1435,13 +1460,6 @@ func normalizeBackoffSettings(mode *string, requestRetry **int) {
 }
 
 func normalizeErrorControlPolicy(policy config.ErrorControlPolicy) config.ErrorControlPolicy {
-	if policy.ProviderRetries != nil {
-		value := *policy.ProviderRetries
-		if value < 1 {
-			value = 1
-		}
-		policy.ProviderRetries = config.DefaultIntPtr(value)
-	}
 	if policy.RetryRounds != nil {
 		value := *policy.RetryRounds
 		if value < 1 {
@@ -1469,6 +1487,31 @@ func normalizeErrorControlPolicy(policy config.ErrorControlPolicy) config.ErrorC
 			value = 60
 		}
 		policy.RoundBackoffMax = config.DefaultFloatPtr(value)
+	}
+	return policy
+}
+
+func normalizeProviderCooldownConfig(policy config.ProviderCooldownConfig) config.ProviderCooldownConfig {
+	if policy.Start != nil {
+		value := *policy.Start
+		if value < 1 {
+			value = config.DefaultProviderCooldownStart
+		}
+		policy.Start = config.DefaultIntPtr(value)
+	}
+	if policy.Exponent != nil {
+		value := *policy.Exponent
+		if value <= 0 {
+			value = config.DefaultProviderCooldownExponent
+		}
+		policy.Exponent = config.DefaultFloatPtr(value)
+	}
+	if policy.Max != nil {
+		value := *policy.Max
+		if value < 1 {
+			value = config.DefaultProviderCooldownMax
+		}
+		policy.Max = config.DefaultIntPtr(value)
 	}
 	return policy
 }

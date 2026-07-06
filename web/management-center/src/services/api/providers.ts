@@ -14,7 +14,9 @@ import type {
   ProviderKeyConfig,
   ApiKeyEntry,
   ModelAlias,
+  ProviderCooldownConfig,
 } from '@/types';
+import { normalizeProviderCooldown } from '@/utils/providerCooldown';
 
 const serializeHeaders = (headers?: Record<string, string>) =>
   headers && Object.keys(headers).length ? headers : undefined;
@@ -64,6 +66,16 @@ const serializeApiKeyEntry = (entry: ApiKeyEntry) => {
   return payload;
 };
 
+const serializeCooldown = (cooldown?: ProviderCooldownConfig) => {
+  const normalized = normalizeProviderCooldown(cooldown);
+  if (!normalized) return undefined;
+  return {
+    start: normalized.start,
+    exponent: normalized.exponent,
+    max: normalized.max,
+  };
+};
+
 const serializeProviderKey = (config: ProviderKeyConfig) => {
   const payload: Record<string, unknown> = { 'api-key': config.apiKey };
   if (config.priority !== undefined) payload.priority = config.priority;
@@ -71,6 +83,8 @@ const serializeProviderKey = (config: ProviderKeyConfig) => {
   if (config.backoffMode === 'custom' && config.requestRetry !== undefined) {
     payload['request-retry'] = config.requestRetry;
   }
+  const cooldown = serializeCooldown(config.cooldown);
+  if (cooldown) payload.cooldown = cooldown;
   if (config.prefix?.trim()) payload.prefix = config.prefix.trim();
   if (config.baseUrl) payload['base-url'] = config.baseUrl;
   if (config.authMode && config.authMode !== 'auto') payload['auth-mode'] = config.authMode;
@@ -119,6 +133,8 @@ const serializeVertexKey = (config: ProviderKeyConfig) => {
   if (config.backoffMode === 'custom' && config.requestRetry !== undefined) {
     payload['request-retry'] = config.requestRetry;
   }
+  const cooldown = serializeCooldown(config.cooldown);
+  if (cooldown) payload.cooldown = cooldown;
   if (config.prefix?.trim()) payload.prefix = config.prefix.trim();
   if (config.baseUrl) payload['base-url'] = config.baseUrl;
   if (config.proxyUrl) payload['proxy-url'] = config.proxyUrl;
@@ -139,6 +155,8 @@ const serializeGeminiKey = (config: GeminiKeyConfig) => {
   if (config.backoffMode === 'custom' && config.requestRetry !== undefined) {
     payload['request-retry'] = config.requestRetry;
   }
+  const cooldown = serializeCooldown(config.cooldown);
+  if (cooldown) payload.cooldown = cooldown;
   if (config.prefix?.trim()) payload.prefix = config.prefix.trim();
   if (config.baseUrl) payload['base-url'] = config.baseUrl;
   if (config.proxyUrl) payload['proxy-url'] = config.proxyUrl;
@@ -170,6 +188,8 @@ const serializeOpenAIProvider = (provider: OpenAIProviderConfig) => {
   if (provider.backoffMode === 'custom' && provider.requestRetry !== undefined) {
     payload['request-retry'] = provider.requestRetry;
   }
+  const cooldown = serializeCooldown(provider.cooldown);
+  if (cooldown) payload.cooldown = cooldown;
   if (provider.testModel) payload['test-model'] = provider.testModel;
   return payload;
 };

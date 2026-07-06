@@ -408,6 +408,7 @@ func (e *GeminiCLIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyaut
 					line := scanner.Bytes()
 					linesScanned++
 					helps.AppendAPIResponseChunk(ctx, e.cfg, line)
+					reporter.SetUpstreamModelFromPayload(line)
 					if detail, ok := helps.ParseGeminiCLIStreamUsage(line); ok {
 						reporter.Publish(ctx, detail)
 					}

@@ -678,10 +678,10 @@ func (s *Service) Run(ctx context.Context) error {
 		nextStrategy := strings.ToLower(strings.TrimSpace(newCfg.Routing.Strategy))
 		normalizeStrategy := func(strategy string) string {
 			switch strategy {
-			case "fill-first", "fillfirst", "ff":
-				return "fill-first"
+			case "last-success":
+				return "last-success"
 			default:
-				return "round-robin"
+				return "random"
 			}
 		}
 		previousStrategy = normalizeStrategy(previousStrategy)
@@ -695,13 +695,7 @@ func (s *Service) Run(ctx context.Context) error {
 			previousSessionAffinityTTL != nextSessionAffinityTTL
 
 		if s.coreManager != nil && selectorChanged {
-			var selector coreauth.Selector
-			switch nextStrategy {
-			case "fill-first":
-				selector = &coreauth.FillFirstSelector{}
-			default:
-				selector = &coreauth.RoundRobinSelector{}
-			}
+			var selector coreauth.Selector = &coreauth.RoundRobinSelector{}
 
 			if nextSessionAffinity {
 				ttl := time.Hour

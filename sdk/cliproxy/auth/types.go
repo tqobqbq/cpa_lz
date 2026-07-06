@@ -170,10 +170,14 @@ func SyncDisabledMetadata(auth *Auth) {
 }
 
 type priorityTier struct {
+	group int
 	entry int
 }
 
 func (t priorityTier) betterThan(other priorityTier) bool {
+	if t.group != other.group {
+		return t.group > other.group
+	}
 	return t.entry > other.entry
 }
 
@@ -469,11 +473,6 @@ func (a *Auth) RequestRetryOverride() (int, bool) {
 	return 0, false
 }
 
-// ProviderRetriesOverride returns the auth-scoped provider retry override when present.
-func (a *Auth) ProviderRetriesOverride() (int, bool) {
-	return positiveIntMetadataOverride(a, "provider_retries", "provider-retries")
-}
-
 // RetryRoundsOverride returns the auth-scoped whole-request retry rounds override when present.
 func (a *Auth) RetryRoundsOverride() (int, bool) {
 	return positiveIntMetadataOverride(a, "retry_rounds", "retry-rounds")
@@ -492,6 +491,21 @@ func (a *Auth) RoundBackoffExponentOverride() (float64, bool) {
 // RoundBackoffMaxOverride returns the auth-scoped round backoff max override in seconds.
 func (a *Auth) RoundBackoffMaxOverride() (float64, bool) {
 	return positiveFloatMetadataOverride(a, "round_backoff_max", "round-backoff-max")
+}
+
+// ProviderCooldownStartOverride returns the auth-scoped failure cooldown start override.
+func (a *Auth) ProviderCooldownStartOverride() (int, bool) {
+	return positiveIntMetadataOverride(a, "cooldown_start", "cooldown-start")
+}
+
+// ProviderCooldownExponentOverride returns the auth-scoped failure cooldown exponent override.
+func (a *Auth) ProviderCooldownExponentOverride() (float64, bool) {
+	return positiveFloatMetadataOverride(a, "cooldown_exponent", "cooldown-exponent")
+}
+
+// ProviderCooldownMaxOverride returns the auth-scoped failure cooldown max override.
+func (a *Auth) ProviderCooldownMaxOverride() (int, bool) {
+	return positiveIntMetadataOverride(a, "cooldown_max", "cooldown-max")
 }
 
 func positiveIntMetadataOverride(a *Auth, keys ...string) (int, bool) {

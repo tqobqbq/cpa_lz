@@ -40,19 +40,25 @@ type RequestEventRow = {
   timestampMs: number;
   timestampLabel: string;
   model: string;
+  upstreamModel: string;
   sourceKey: string;
   sourceRaw: string;
   source: string;
   sourceType: string;
   sourceInfo: SourceInfo;
-  authIndex: string;
-  remoteIP: string;
   userAgent: string;
   inputChars: number;
   failed: boolean;
   statusCode: number | null;
   errorReason: string;
   errorMessage: string;
+  requestCount: number | null;
+  retryRound: number | null;
+  roundDispatchIndex: number | null;
+  parallelEligible: boolean | null;
+  providerCooldownRemaining: number | null;
+  providerCooldownGeneratedRaw: number | null;
+  dispatchInfo: string;
   latencyMs: number | null;
   inputTokens: number;
   outputTokens: number;
@@ -90,7 +96,26 @@ const toNumber = (value: unknown): number => {
   return parsed;
 };
 
-const encodeCsv = (value: string | number): string => {
+const toOptionalNumber = (value: unknown): number | null => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+const formatDispatchNumber = (value: number | null): string => {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return '-';
+  }
+  return Number.isInteger(value) ? String(value) : String(Number(value.toFixed(6)));
+};
+
+const formatDispatchBoolean = (value: boolean | null): string => {
+  if (value === null) {
+    return '-';
+  }
+  return value ? 'Y' : 'N';
+};
+
+const encodeCsv = (value: string | number | boolean): string => {
   const text = String(value ?? '');
   const trimmedLeft = text.replace(/^\s+/, '');
   const safeText = trimmedLeft && /^[=+\-@]/.test(trimmedLeft) ? `'${text}` : text;
@@ -117,7 +142,6 @@ export function RequestEventsDetailsCard({
 
   const [modelFilter, setModelFilter] = useState(ALL_FILTER);
   const [sourceFilter, setSourceFilter] = useState(ALL_FILTER);
-  const [authIndexFilter, setAuthIndexFilter] = useState(ALL_FILTER);
   const [authFileMap, setAuthFileMap] = useState<Map<string, CredentialInfo>>(new Map());
   const [expandedErrorRows, setExpandedErrorRows] = useState<Set<string>>(() => new Set());
   const [sourceTooltip, setSourceTooltip] = useState<SourceTooltipState | null>(null);
@@ -162,89 +186,110 @@ export function RequestEventsDetailsCard({
   const rows = useMemo<RequestEventRow[]>(() => {
     const details = collectUsageDetails(usage);
 
-    const baseRows = details
-      .map((detail, index) => {
-        const timestamp = detail.timestamp;
-        const timestampMs =
-          typeof detail.__timestampMs === 'number' && detail.__timestampMs > 0
-            ? detail.__timestampMs
-            : parseTimestampMs(timestamp);
-        const date = Number.isNaN(timestampMs) ? null : new Date(timestampMs);
-        const sourceRaw = String(detail.source ?? '').trim();
-        const authIndexRaw = detail.auth_index as unknown;
-        const authIndex =
-          authIndexRaw === null || authIndexRaw === undefined || authIndexRaw === ''
-            ? '-'
-            : String(authIndexRaw);
-        const remoteIP = String(detail.remote_ip ?? '').trim() || '-';
-        const sourceInfo = resolveSourceDisplay(
-          sourceRaw,
-          authIndexRaw,
-          sourceInfoMap,
-          authFileMap
-        );
-        const source = sourceInfo.displayName;
-        const sourceKey = sourceInfo.identityKey ?? `source:${sourceRaw || source}`;
-        const sourceType = sourceInfo.type;
-        const model = String(detail.__modelName ?? '').trim() || '-';
-        const userAgent = String(detail.user_agent ?? '').trim() || '-';
-        const inputChars = Math.max(toNumber(detail.input_chars), 0);
-        const buckets = getUsageTokenBuckets(detail);
-        const inputTokens = buckets.inputTokens;
-        const outputTokens = buckets.outputTokens;
-        const reasoningTokens = buckets.reasoningTokens;
-        const cachedTokens = buckets.cachedInputTokens;
-        const cacheCreationTokens = buckets.cacheCreationTokens;
-        const cacheWrite5mTokens = buckets.cacheWrite5mTokens;
-        const cacheWrite1hTokens = buckets.cacheWrite1hTokens;
-        const cacheReadTokens = buckets.cacheReadTokens;
-        const totalTokens = Math.max(
-          toNumber(detail.tokens?.total_tokens),
-          extractTotalTokens(detail)
-        );
-        const cost = calculateCost(detail, modelPrices);
-        const latencyMs = extractLatencyMs(detail);
-        const statusCode =
-          typeof detail.status_code === 'number' &&
-          Number.isFinite(detail.status_code) &&
-          detail.status_code > 0
-            ? detail.status_code
-            : null;
-        const errorReason = String(detail.error_reason ?? '').trim();
-        const errorMessage = String(detail.error_message ?? '').trim();
+    const baseRows = details.map((detail, index) => {
+      const timestamp = detail.timestamp;
+      const timestampMs =
+        typeof detail.__timestampMs === 'number' && detail.__timestampMs > 0
+          ? detail.__timestampMs
+          : parseTimestampMs(timestamp);
+      const date = Number.isNaN(timestampMs) ? null : new Date(timestampMs);
+      const sourceRaw = String(detail.source ?? '').trim();
+      const authIndexRaw = detail.auth_index as unknown;
+      const sourceInfo = resolveSourceDisplay(sourceRaw, authIndexRaw, sourceInfoMap, authFileMap);
+      const source = sourceInfo.displayName;
+      const sourceKey = sourceInfo.identityKey ?? `source:${sourceRaw || source}`;
+      const sourceType = sourceInfo.type;
+      const model = String(detail.__modelName ?? '').trim() || '-';
+      const upstreamModel = String(detail.upstream_model ?? '').trim() || '-';
+      const userAgent = String(detail.user_agent ?? '').trim() || '-';
+      const inputChars = Math.max(toNumber(detail.input_chars), 0);
+      const buckets = getUsageTokenBuckets(detail);
+      const inputTokens = buckets.inputTokens;
+      const outputTokens = buckets.outputTokens;
+      const reasoningTokens = buckets.reasoningTokens;
+      const cachedTokens = buckets.cachedInputTokens;
+      const cacheCreationTokens = buckets.cacheCreationTokens;
+      const cacheWrite5mTokens = buckets.cacheWrite5mTokens;
+      const cacheWrite1hTokens = buckets.cacheWrite1hTokens;
+      const cacheReadTokens = buckets.cacheReadTokens;
+      const totalTokens = Math.max(
+        toNumber(detail.tokens?.total_tokens),
+        extractTotalTokens(detail)
+      );
+      const cost = calculateCost(detail, modelPrices);
+      const latencyMs = extractLatencyMs(detail);
+      const statusCode =
+        typeof detail.status_code === 'number' &&
+        Number.isFinite(detail.status_code) &&
+        detail.status_code > 0
+          ? detail.status_code
+          : null;
+      const errorReason = String(detail.error_reason ?? '').trim();
+      const errorMessage = String(detail.error_message ?? '').trim();
+      const requestCount = toOptionalNumber(detail.request_count);
+      const retryRound = toOptionalNumber(detail.retry_round);
+      const roundDispatchIndex = toOptionalNumber(detail.round_dispatch_index);
+      const parallelEligible =
+        typeof detail.parallel_eligible === 'boolean' ? detail.parallel_eligible : null;
+      const hasDispatchMetadata = requestCount !== null || retryRound !== null;
+      const providerCooldownRemaining =
+        toOptionalNumber(detail.provider_cooldown_remaining) ?? (hasDispatchMetadata ? 0 : null);
+      const providerCooldownGeneratedRaw =
+        toOptionalNumber(detail.provider_cooldown_generated_raw) ??
+        (hasDispatchMetadata ? 0 : null);
+      const dispatchInfo = [
+        requestCount,
+        retryRound,
+        roundDispatchIndex,
+        parallelEligible,
+        providerCooldownRemaining,
+        providerCooldownGeneratedRaw,
+      ]
+        .map((value) =>
+          typeof value === 'boolean' || value === null
+            ? formatDispatchBoolean(value as boolean | null)
+            : formatDispatchNumber(value)
+        )
+        .join(',');
 
-        return {
-          id: `${timestamp}-${model}-${sourceKey}-${authIndex}-${index}`,
-          timestamp,
-          timestampMs: Number.isNaN(timestampMs) ? 0 : timestampMs,
-          timestampLabel: date ? date.toLocaleString(i18n.language) : timestamp || '-',
-          model,
-          sourceKey,
-          sourceRaw: sourceRaw || '-',
-          source,
-          sourceType,
-          sourceInfo,
-          authIndex,
-          remoteIP,
-          userAgent,
-          inputChars,
-          failed: detail.failed === true,
-          statusCode,
-          errorReason,
-          errorMessage,
-          latencyMs,
-          inputTokens,
-          outputTokens,
-          reasoningTokens,
-          cachedTokens,
-          cacheCreationTokens,
-          cacheWrite5mTokens,
-          cacheWrite1hTokens,
-          cacheReadTokens,
-          totalTokens,
-          cost,
-        };
-      });
+      return {
+        id: `${timestamp}-${model}-${sourceKey}-${upstreamModel}-${index}`,
+        timestamp,
+        timestampMs: Number.isNaN(timestampMs) ? 0 : timestampMs,
+        timestampLabel: date ? date.toLocaleString(i18n.language) : timestamp || '-',
+        model,
+        upstreamModel,
+        sourceKey,
+        sourceRaw: sourceRaw || '-',
+        source,
+        sourceType,
+        sourceInfo,
+        userAgent,
+        inputChars,
+        failed: detail.failed === true,
+        statusCode,
+        errorReason,
+        errorMessage,
+        requestCount,
+        retryRound,
+        roundDispatchIndex,
+        parallelEligible,
+        providerCooldownRemaining,
+        providerCooldownGeneratedRaw,
+        dispatchInfo,
+        latencyMs,
+        inputTokens,
+        outputTokens,
+        reasoningTokens,
+        cachedTokens,
+        cacheCreationTokens,
+        cacheWrite5mTokens,
+        cacheWrite1hTokens,
+        cacheReadTokens,
+        totalTokens,
+        cost,
+      };
+    });
 
     const sourceLabelKeyMap = new Map<string, Set<string>>();
     baseRows.forEach((row) => {
@@ -257,10 +302,6 @@ export function RequestEventsDetailsCard({
       const labelKeyCount = sourceLabelKeyMap.get(row.source)?.size ?? 0;
       if (labelKeyCount <= 1) {
         return row.source;
-      }
-
-      if (row.authIndex !== '-') {
-        return `${row.source} · ${row.authIndex}`;
       }
 
       if (row.sourceRaw !== '-' && row.sourceRaw !== row.source) {
@@ -312,17 +353,6 @@ export function RequestEventsDetailsCard({
     ];
   }, [rows, t]);
 
-  const authIndexOptions = useMemo(
-    () => [
-      { value: ALL_FILTER, label: t('usage_stats.filter_all') },
-      ...Array.from(new Set(rows.map((row) => row.authIndex))).map((authIndex) => ({
-        value: authIndex,
-        label: authIndex,
-      })),
-    ],
-    [rows, t]
-  );
-
   const modelOptionSet = useMemo(
     () => new Set(modelOptions.map((option) => option.value)),
     [modelOptions]
@@ -331,16 +361,9 @@ export function RequestEventsDetailsCard({
     () => new Set(sourceOptions.map((option) => option.value)),
     [sourceOptions]
   );
-  const authIndexOptionSet = useMemo(
-    () => new Set(authIndexOptions.map((option) => option.value)),
-    [authIndexOptions]
-  );
 
   const effectiveModelFilter = modelOptionSet.has(modelFilter) ? modelFilter : ALL_FILTER;
   const effectiveSourceFilter = sourceOptionSet.has(sourceFilter) ? sourceFilter : ALL_FILTER;
-  const effectiveAuthIndexFilter = authIndexOptionSet.has(authIndexFilter)
-    ? authIndexFilter
-    : ALL_FILTER;
 
   const filteredRows = useMemo(
     () =>
@@ -349,24 +372,19 @@ export function RequestEventsDetailsCard({
           effectiveModelFilter === ALL_FILTER || row.model === effectiveModelFilter;
         const sourceMatched =
           effectiveSourceFilter === ALL_FILTER || row.sourceKey === effectiveSourceFilter;
-        const authIndexMatched =
-          effectiveAuthIndexFilter === ALL_FILTER || row.authIndex === effectiveAuthIndexFilter;
-        return modelMatched && sourceMatched && authIndexMatched;
+        return modelMatched && sourceMatched;
       }),
-    [effectiveAuthIndexFilter, effectiveModelFilter, effectiveSourceFilter, rows]
+    [effectiveModelFilter, effectiveSourceFilter, rows]
   );
 
   const renderedRows = useMemo(() => filteredRows.slice(0, MAX_RENDERED_EVENTS), [filteredRows]);
 
   const hasActiveFilters =
-    effectiveModelFilter !== ALL_FILTER ||
-    effectiveSourceFilter !== ALL_FILTER ||
-    effectiveAuthIndexFilter !== ALL_FILTER;
+    effectiveModelFilter !== ALL_FILTER || effectiveSourceFilter !== ALL_FILTER;
 
   const handleClearFilters = () => {
     setModelFilter(ALL_FILTER);
     setSourceFilter(ALL_FILTER);
-    setAuthIndexFilter(ALL_FILTER);
   };
 
   const handleExportCsv = () => {
@@ -375,16 +393,22 @@ export function RequestEventsDetailsCard({
     const csvHeader = [
       'timestamp',
       'model',
+      'upstream_model',
       'source',
       'source_raw',
-      'auth_index',
-      'remote_ip',
       'user_agent',
       'input_chars',
       'result',
       'status_code',
       'error_reason',
       'error_message',
+      'dispatch',
+      'request_count',
+      'retry_round',
+      'round_dispatch_index',
+      'parallel_eligible',
+      'provider_cooldown_remaining',
+      'provider_cooldown_generated_raw',
       ...(hasLatencyData ? ['latency_ms'] : []),
       'cost',
       'input_tokens',
@@ -402,16 +426,22 @@ export function RequestEventsDetailsCard({
       [
         row.timestamp,
         row.model,
+        row.upstreamModel,
         row.source,
         row.sourceRaw,
-        row.authIndex,
-        row.remoteIP,
         row.userAgent,
         row.inputChars,
         row.failed ? 'failed' : 'success',
         row.statusCode ?? '',
         row.errorReason,
         row.errorMessage,
+        row.dispatchInfo,
+        row.requestCount ?? '',
+        row.retryRound ?? '',
+        row.roundDispatchIndex ?? '',
+        row.parallelEligible ?? '',
+        row.providerCooldownRemaining ?? '',
+        row.providerCooldownGeneratedRaw ?? '',
         ...(hasLatencyData ? [row.latencyMs ?? ''] : []),
         row.cost,
         row.inputTokens,
@@ -442,16 +472,22 @@ export function RequestEventsDetailsCard({
     const payload = filteredRows.map((row) => ({
       timestamp: row.timestamp,
       model: row.model,
+      upstream_model: row.upstreamModel,
       source: row.source,
       source_raw: row.sourceRaw,
-      auth_index: row.authIndex,
-      remote_ip: row.remoteIP,
       user_agent: row.userAgent,
       input_chars: row.inputChars,
       failed: row.failed,
       ...(row.statusCode !== null ? { status_code: row.statusCode } : {}),
       error_reason: row.errorReason,
       error_message: row.errorMessage,
+      dispatch: row.dispatchInfo,
+      request_count: row.requestCount,
+      retry_round: row.retryRound,
+      round_dispatch_index: row.roundDispatchIndex,
+      parallel_eligible: row.parallelEligible,
+      provider_cooldown_remaining: row.providerCooldownRemaining,
+      provider_cooldown_generated_raw: row.providerCooldownGeneratedRaw,
       ...(hasLatencyData && row.latencyMs !== null ? { latency_ms: row.latencyMs } : {}),
       cost: row.cost,
       tokens: {
@@ -484,7 +520,10 @@ export function RequestEventsDetailsCard({
         ? [t('common.priority'), String(row.sourceInfo.priority)]
         : null,
       row.sourceInfo.enabled !== undefined
-        ? [t('ai_providers.config_toggle_label'), row.sourceInfo.enabled ? t('common.yes') : t('common.no')]
+        ? [
+            t('ai_providers.config_toggle_label'),
+            row.sourceInfo.enabled ? t('common.yes') : t('common.no'),
+          ]
         : null,
       row.sourceInfo.proxyUrl ? [t('common.proxy_url'), row.sourceInfo.proxyUrl] : null,
       row.sourceInfo.apiKeyCount !== undefined
@@ -580,19 +619,6 @@ export function RequestEventsDetailsCard({
             fullWidth={false}
           />
         </div>
-        <div className={styles.requestEventsFilterItem}>
-          <span className={styles.requestEventsFilterLabel}>
-            {t('usage_stats.request_events_filter_auth_index')}
-          </span>
-          <Select
-            value={effectiveAuthIndexFilter}
-            options={authIndexOptions}
-            onChange={setAuthIndexFilter}
-            className={styles.requestEventsSelect}
-            ariaLabel={t('usage_stats.request_events_filter_auth_index')}
-            fullWidth={false}
-          />
-        </div>
       </div>
 
       {loading && rows.length === 0 ? (
@@ -628,14 +654,14 @@ export function RequestEventsDetailsCard({
                 <tr>
                   <th>{t('usage_stats.request_events_timestamp')}</th>
                   <th>{t('usage_stats.model_name')}</th>
+                  <th>{t('usage_stats.request_events_upstream_model')}</th>
                   <th>{t('usage_stats.request_events_source')}</th>
-                  <th>{t('usage_stats.request_events_auth_index')}</th>
-                  <th>{t('usage_stats.request_events_remote_ip')}</th>
                   <th>{t('usage_stats.request_events_user_agent')}</th>
                   <th>{t('usage_stats.request_events_input_chars')}</th>
                   <th>{t('usage_stats.request_events_result')}</th>
                   <th>{t('logs.trace_status_code')}</th>
                   <th>{t('common.error')}</th>
+                  <th>{t('usage_stats.request_events_dispatch')}</th>
                   {hasLatencyData && <th title={latencyHint}>{t('usage_stats.time')}</th>}
                   <th>{t('usage_stats.request_events_cost')}</th>
                   <th>{t('usage_stats.input_tokens')}</th>
@@ -654,6 +680,9 @@ export function RequestEventsDetailsCard({
                       {row.timestampLabel}
                     </td>
                     <td className={styles.modelCell}>{row.model}</td>
+                    <td className={styles.modelCell} title={row.upstreamModel}>
+                      {row.upstreamModel}
+                    </td>
                     <td className={styles.requestEventsSourceCell} title={row.source}>
                       {row.sourceInfo.editPath ? (
                         <button
@@ -678,12 +707,6 @@ export function RequestEventsDetailsCard({
                       {row.sourceType && (
                         <span className={styles.credentialType}>{row.sourceType}</span>
                       )}
-                    </td>
-                    <td className={styles.requestEventsAuthIndex} title={row.authIndex}>
-                      {row.authIndex}
-                    </td>
-                    <td className={styles.requestEventsAuthIndex} title={row.remoteIP}>
-                      {row.remoteIP}
                     </td>
                     <td className={styles.requestEventsSourceCell} title={row.userAgent}>
                       {row.userAgent}
@@ -738,6 +761,9 @@ export function RequestEventsDetailsCard({
                           </>
                         );
                       })()}
+                    </td>
+                    <td className={styles.requestEventsAuthIndex} title={row.dispatchInfo}>
+                      {row.dispatchInfo}
                     </td>
                     {hasLatencyData && (
                       <td className={styles.durationCell}>{formatDurationMs(row.latencyMs)}</td>

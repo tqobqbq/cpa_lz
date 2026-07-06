@@ -176,7 +176,6 @@ function getPortError(value: string): 'port_range' | undefined {
 }
 
 const ERROR_CONTROL_POLICY_FIELDS: ErrorControlPolicyField[] = [
-  'providerRetries',
   'retryRounds',
   'roundBackoffBase',
   'roundBackoffExponent',
@@ -184,7 +183,6 @@ const ERROR_CONTROL_POLICY_FIELDS: ErrorControlPolicyField[] = [
 ];
 
 const ERROR_CONTROL_YAML_KEYS: Record<ErrorControlPolicyField, string> = {
-  providerRetries: 'provider-retries',
   retryRounds: 'retry-rounds',
   roundBackoffBase: 'round-backoff-base',
   roundBackoffExponent: 'round-backoff-exponent',
@@ -193,7 +191,6 @@ const ERROR_CONTROL_YAML_KEYS: Record<ErrorControlPolicyField, string> = {
 
 function createEmptyErrorControlPolicy(): ErrorControlPolicyValues {
   return {
-    providerRetries: '',
     retryRounds: '',
     roundBackoffBase: '',
     roundBackoffExponent: '',
@@ -325,7 +322,7 @@ function setErrorControlPolicyInDoc(
   policy: ErrorControlPolicyValues
 ): void {
   ensureMapInDoc(doc, path);
-  setIntFromStringInDoc(doc, [...path, 'provider-retries'], policy.providerRetries);
+  doc.deleteIn([...path, 'provider-retries']);
   setIntFromStringInDoc(doc, [...path, 'retry-rounds'], policy.retryRounds);
   setNumberFromStringInDoc(doc, [...path, 'round-backoff-base'], policy.roundBackoffBase);
   setNumberFromStringInDoc(doc, [...path, 'round-backoff-exponent'], policy.roundBackoffExponent);
@@ -456,6 +453,12 @@ export function getVisualConfigValidationErrors(
     logsMaxTotalSizeMb: getNonNegativeIntegerError(values.logsMaxTotalSizeMb),
     requestRetry: getNonNegativeIntegerError(values.requestRetry),
     maxRetryInterval: getNonNegativeIntegerError(values.maxRetryInterval),
+    routingParallelRequestsMinRound: getNonNegativeIntegerError(
+      values.routingParallelRequestsMinRound
+    ),
+    routingParallelRequestsMinFailures: getNonNegativeIntegerError(
+      values.routingParallelRequestsMinFailures
+    ),
     'outputFilter.maxLength': getPositiveIntegerError(values.outputFilter.maxLength),
     'streaming.keepaliveSeconds': getNonNegativeIntegerError(values.streaming.keepaliveSeconds),
     'streaming.bootstrapRetries': getNonNegativeIntegerError(values.streaming.bootstrapRetries),
@@ -468,9 +471,6 @@ export function getVisualConfigValidationErrors(
       getPositiveIntegerError(entry.maxLength);
   }
   const setPolicyErrors = (prefix: string, policy: ErrorControlPolicyValues) => {
-    errors[`${prefix}.providerRetries` as VisualConfigFieldPath] = getPositiveIntegerError(
-      policy.providerRetries
-    );
     errors[`${prefix}.retryRounds` as VisualConfigFieldPath] = getPositiveIntegerError(
       policy.retryRounds
     );
@@ -893,7 +893,24 @@ export function parseVisualConfigValuesFromYaml(yamlContent: string): VisualConf
     quotaSwitchPreviewModel: Boolean(quotaExceeded?.['switch-preview-model'] ?? true),
     quotaAntigravityCredits: Boolean(quotaExceeded?.['antigravity-credits'] ?? true),
 
-    routingStrategy: routing?.strategy === 'fill-first' ? 'fill-first' : 'round-robin',
+    routingStrategy: routing?.strategy === 'last-success' ? 'last-success' : 'random',
+    routingParallelRequestsEnabled: Boolean(
+      routing?.['parallel-requests-enabled'] ??
+        routing?.parallelRequestsEnabled ??
+        routing?.['parallelRequestsEnabled']
+    ),
+    routingParallelRequestsMinRound: String(
+      routing?.['parallel-requests-min-round'] ??
+        routing?.parallelRequestsMinRound ??
+        routing?.['parallelRequestsMinRound'] ??
+        ''
+    ),
+    routingParallelRequestsMinFailures: String(
+      routing?.['parallel-requests-min-failures'] ??
+        routing?.parallelRequestsMinFailures ??
+        routing?.['parallelRequestsMinFailures'] ??
+        ''
+    ),
     routingSessionAffinity: Boolean(
       routing?.['session-affinity'] ?? routing?.sessionAffinity ?? routing?.['sessionAffinity']
     ),
@@ -1019,12 +1036,30 @@ export function applyVisualConfigValuesToYaml(
 
     if (
       docHas(doc, ['routing']) ||
-      values.routingStrategy !== 'round-robin' ||
+      values.routingStrategy !== 'random' ||
+      values.routingParallelRequestsEnabled ||
+      values.routingParallelRequestsMinRound.trim() ||
+      values.routingParallelRequestsMinFailures.trim() ||
       values.routingSessionAffinity ||
       values.routingSessionAffinityTTL.trim()
     ) {
       ensureMapInDoc(doc, ['routing']);
       doc.setIn(['routing', 'strategy'], values.routingStrategy);
+      setBooleanInDoc(
+        doc,
+        ['routing', 'parallel-requests-enabled'],
+        values.routingParallelRequestsEnabled
+      );
+      setIntFromStringInDoc(
+        doc,
+        ['routing', 'parallel-requests-min-round'],
+        values.routingParallelRequestsMinRound
+      );
+      setIntFromStringInDoc(
+        doc,
+        ['routing', 'parallel-requests-min-failures'],
+        values.routingParallelRequestsMinFailures
+      );
       setBooleanInDoc(doc, ['routing', 'session-affinity'], values.routingSessionAffinity);
       setStringInDoc(doc, ['routing', 'session-affinity-ttl'], values.routingSessionAffinityTTL);
       deleteIfMapEmpty(doc, ['routing']);
@@ -1302,6 +1337,27 @@ function getNextDirtyFields(
   if (Object.prototype.hasOwnProperty.call(patch, 'routingStrategy')) {
     updateDirty('routingStrategy', nextValues.routingStrategy === baselineValues.routingStrategy);
   }
+  if (Object.prototype.hasOwnProperty.call(patch, 'routingParallelRequestsEnabled')) {
+    updateDirty(
+      'routingParallelRequestsEnabled',
+      nextValues.routingParallelRequestsEnabled ===
+        baselineValues.routingParallelRequestsEnabled
+    );
+  }
+  if (Object.prototype.hasOwnProperty.call(patch, 'routingParallelRequestsMinRound')) {
+    updateDirty(
+      'routingParallelRequestsMinRound',
+      nextValues.routingParallelRequestsMinRound ===
+        baselineValues.routingParallelRequestsMinRound
+    );
+  }
+  if (Object.prototype.hasOwnProperty.call(patch, 'routingParallelRequestsMinFailures')) {
+    updateDirty(
+      'routingParallelRequestsMinFailures',
+      nextValues.routingParallelRequestsMinFailures ===
+        baselineValues.routingParallelRequestsMinFailures
+    );
+  }
   if (Object.prototype.hasOwnProperty.call(patch, 'routingSessionAffinity')) {
     updateDirty(
       'routingSessionAffinity',
@@ -1504,7 +1560,24 @@ export function useVisualConfig() {
         quotaSwitchPreviewModel: Boolean(quotaExceeded?.['switch-preview-model'] ?? true),
         quotaAntigravityCredits: Boolean(quotaExceeded?.['antigravity-credits'] ?? true),
 
-        routingStrategy: routing?.strategy === 'fill-first' ? 'fill-first' : 'round-robin',
+        routingStrategy: routing?.strategy === 'last-success' ? 'last-success' : 'random',
+        routingParallelRequestsEnabled: Boolean(
+          routing?.['parallel-requests-enabled'] ??
+            routing?.parallelRequestsEnabled ??
+            routing?.['parallelRequestsEnabled']
+        ),
+        routingParallelRequestsMinRound: String(
+          routing?.['parallel-requests-min-round'] ??
+            routing?.parallelRequestsMinRound ??
+            routing?.['parallelRequestsMinRound'] ??
+            ''
+        ),
+        routingParallelRequestsMinFailures: String(
+          routing?.['parallel-requests-min-failures'] ??
+            routing?.parallelRequestsMinFailures ??
+            routing?.['parallelRequestsMinFailures'] ??
+            ''
+        ),
         routingSessionAffinity: Boolean(
           routing?.['session-affinity'] ?? routing?.sessionAffinity ?? routing?.['sessionAffinity']
         ),
@@ -1642,12 +1715,30 @@ export function useVisualConfig() {
 
         if (
           docHas(doc, ['routing']) ||
-          values.routingStrategy !== 'round-robin' ||
+          values.routingStrategy !== 'random' ||
+          values.routingParallelRequestsEnabled ||
+          values.routingParallelRequestsMinRound.trim() ||
+          values.routingParallelRequestsMinFailures.trim() ||
           values.routingSessionAffinity ||
           values.routingSessionAffinityTTL.trim()
         ) {
           ensureMapInDoc(doc, ['routing']);
           doc.setIn(['routing', 'strategy'], values.routingStrategy);
+          setBooleanInDoc(
+            doc,
+            ['routing', 'parallel-requests-enabled'],
+            values.routingParallelRequestsEnabled
+          );
+          setIntFromStringInDoc(
+            doc,
+            ['routing', 'parallel-requests-min-round'],
+            values.routingParallelRequestsMinRound
+          );
+          setIntFromStringInDoc(
+            doc,
+            ['routing', 'parallel-requests-min-failures'],
+            values.routingParallelRequestsMinFailures
+          );
           setBooleanInDoc(doc, ['routing', 'session-affinity'], values.routingSessionAffinity);
           setStringInDoc(
             doc,

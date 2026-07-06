@@ -8,6 +8,7 @@ import type {
   ModelAlias,
   OpenAIProviderConfig,
   ProviderKeyConfig,
+  ProviderCooldownConfig,
   RoutingRuleConfig,
   AmpcodeConfig,
   AmpcodeModelMapping,
@@ -15,6 +16,7 @@ import type {
 } from '@/types';
 import type { Config } from '@/types/config';
 import { buildHeaderObject } from '@/utils/headers';
+import { normalizeProviderCooldown } from '@/utils/providerCooldown';
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -115,6 +117,15 @@ const normalizeBackoffMode = (value: unknown): BackoffMode | undefined => {
     return normalized as BackoffMode;
   }
   return undefined;
+};
+
+const normalizeProviderCooldownConfig = (value: unknown): ProviderCooldownConfig | undefined => {
+  if (!isRecord(value)) return undefined;
+  return normalizeProviderCooldown({
+    start: value.start,
+    exponent: value.exponent,
+    max: value.max,
+  });
 };
 
 const normalizeClaudeAuthMode = (value: unknown): ClaudeAuthMode | undefined => {
@@ -275,6 +286,8 @@ const normalizeProviderKeyConfig = (item: unknown): ProviderKeyConfig | null => 
       config.requestRetry = parsed;
     }
   }
+  const cooldown = normalizeProviderCooldownConfig(record?.cooldown);
+  if (cooldown) config.cooldown = cooldown;
   const headers = normalizeHeaders(record?.headers);
   if (headers) config.headers = headers;
   const models = normalizeModelAliases(record?.models);
@@ -353,6 +366,8 @@ const normalizeGeminiKeyConfig = (item: unknown): GeminiKeyConfig | null => {
       config.requestRetry = parsed;
     }
   }
+  const cooldown = normalizeProviderCooldownConfig(record?.cooldown);
+  if (cooldown) config.cooldown = cooldown;
   const models = normalizeModelAliases(record?.models);
   if (models.length) config.models = models;
   const headers = normalizeHeaders(record?.headers);
@@ -410,6 +425,8 @@ const normalizeOpenAIProvider = (provider: unknown): OpenAIProviderConfig | null
       result.requestRetry = parsed;
     }
   }
+  const cooldown = normalizeProviderCooldownConfig(provider.cooldown);
+  if (cooldown) result.cooldown = cooldown;
   if (testModel) result.testModel = String(testModel);
   const authIndex = normalizeAuthIndex(
     provider['auth-index'] ?? provider.authIndex ?? provider['auth_index']
@@ -539,6 +556,13 @@ export const normalizeConfigResponse = (raw: unknown): Config => {
     if (Number.isFinite(parsed)) {
       config.requestRetry = parsed;
     }
+  }
+
+  const providerCooldown = normalizeProviderCooldownConfig(
+    raw['provider-cooldown'] ?? raw.providerCooldown
+  );
+  if (providerCooldown) {
+    config.providerCooldown = providerCooldown;
   }
 
   const quota = raw['quota-exceeded'] ?? raw.quotaExceeded;
@@ -673,6 +697,7 @@ export {
   normalizeProviderKeyConfig,
   normalizeHeaders,
   normalizeExcludedModels,
+  normalizeProviderCooldownConfig,
   normalizeAmpcodeConfig,
   normalizeAmpcodeModelMappings,
   normalizeAmpcodeUpstreamApiKeys,

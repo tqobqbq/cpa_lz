@@ -14,7 +14,7 @@ import { useUnsavedChangesGuard } from '@/hooks/useUnsavedChangesGuard';
 import { SecondaryScreenShell } from '@/components/common/SecondaryScreenShell';
 import { providersApi } from '@/services/api';
 import { useAuthStore, useConfigStore, useNotificationStore } from '@/stores';
-import type { ProviderKeyConfig } from '@/types';
+import type { ProviderCooldownConfig, ProviderKeyConfig } from '@/types';
 import {
   buildBackoffModeOptions,
   excludedModelsTextForEnabledState,
@@ -26,11 +26,12 @@ import {
 } from '@/components/providers/utils';
 import { buildHeaderObject, headersToEntries, normalizeHeaderEntries } from '@/utils/headers';
 import { areKeyValueEntriesEqual, areModelEntriesEqual, areStringArraysEqual } from '@/utils/compare';
+import { areProviderCooldownConfigsEqual, normalizeProviderCooldown } from '@/utils/providerCooldown';
 import {
   isAiProviderEditModalState,
   requestAiProviderEditModalClose,
 } from '@/utils/aiProviderEditModal';
-import type { VertexFormState } from '@/components/providers';
+import { ProviderCooldownFields, type VertexFormState } from '@/components/providers';
 import layoutStyles from './AiProvidersEditLayout.module.scss';
 
 type LocationState = { fromAiProviders?: boolean; fromUsage?: boolean } | null;
@@ -40,6 +41,7 @@ const buildEmptyForm = (): VertexFormState => ({
   priority: 10,
   backoffMode: 'default',
   requestRetry: 2,
+  cooldown: undefined,
   prefix: '',
   baseUrl: '',
   proxyUrl: '',
@@ -70,6 +72,7 @@ type VertexFormBaseline = {
   priority: number | null;
   backoffMode: 'default' | 'off' | 'custom';
   requestRetry: number | null;
+  cooldown?: ProviderCooldownConfig;
   prefix: string;
   baseUrl: string;
   proxyUrl: string;
@@ -87,6 +90,7 @@ const buildVertexBaseline = (form: VertexFormState): VertexFormBaseline => ({
     form.requestRetry !== undefined && Number.isFinite(form.requestRetry)
       ? Math.trunc(form.requestRetry)
       : null,
+  cooldown: normalizeProviderCooldown(form.cooldown),
   prefix: String(form.prefix ?? '').trim(),
   baseUrl: String(form.baseUrl ?? '').trim(),
   proxyUrl: String(form.proxyUrl ?? '').trim(),
@@ -214,6 +218,10 @@ export function AiProvidersVertexEditPage() {
   const backoffModeOptions = useMemo(() => buildBackoffModeOptions(t), [t]);
 
   const normalizedHeaders = useMemo(() => normalizeHeaderEntries(form.headers), [form.headers]);
+  const normalizedCooldown = useMemo(
+    () => normalizeProviderCooldown(form.cooldown),
+    [form.cooldown]
+  );
   const normalizedModels = useMemo(
     () => normalizeModelEntries(form.modelEntries),
     [form.modelEntries]
@@ -263,6 +271,7 @@ export function AiProvidersVertexEditPage() {
     baseline.priority !== normalizedPriority ||
     baseline.backoffMode !== normalizedBackoffMode ||
     baseline.requestRetry !== normalizedRequestRetry ||
+    !areProviderCooldownConfigsEqual(baseline.cooldown, normalizedCooldown) ||
     baseline.prefix !== String(form.prefix ?? '').trim() ||
     baseline.baseUrl !== String(form.baseUrl ?? '').trim() ||
     baseline.proxyUrl !== String(form.proxyUrl ?? '').trim() ||
@@ -302,6 +311,7 @@ export function AiProvidersVertexEditPage() {
         backoffMode: normalizedBackoffMode,
         requestRetry:
           normalizedBackoffMode === 'custom' ? normalizeRequestRetry(form.requestRetry) : undefined,
+        cooldown: normalizedCooldown,
         prefix: form.prefix?.trim() || undefined,
         baseUrl,
         proxyUrl: form.proxyUrl?.trim() || undefined,
@@ -348,6 +358,7 @@ export function AiProvidersVertexEditPage() {
     form,
     handleBack,
     normalizedBackoffMode,
+    normalizedCooldown,
     showNotification,
     t,
     updateConfigValue,
@@ -465,6 +476,11 @@ export function AiProvidersVertexEditPage() {
                 disabled={disableControls || saving}
               />
             )}
+            <ProviderCooldownFields
+              value={form.cooldown}
+              onChange={(cooldown) => setForm((prev) => ({ ...prev, cooldown }))}
+              disabled={disableControls || saving}
+            />
             <Input
               label={t('ai_providers.prefix_label')}
               placeholder={t('ai_providers.prefix_placeholder')}

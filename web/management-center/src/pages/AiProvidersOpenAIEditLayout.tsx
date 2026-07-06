@@ -10,6 +10,7 @@ import type { ApiKeyEntry, OpenAIProviderConfig } from '@/types';
 import type { ModelInfo } from '@/utils/models';
 import { buildHeaderObject, headersToEntries, normalizeHeaderEntries } from '@/utils/headers';
 import { areKeyValueEntriesEqual, areModelEntriesEqual } from '@/utils/compare';
+import { areProviderCooldownConfigsEqual, normalizeProviderCooldown } from '@/utils/providerCooldown';
 import {
   buildApiKeyEntry,
   normalizeBackoffMode,
@@ -55,6 +56,7 @@ const buildEmptyForm = (): OpenAIFormState => ({
   priority: 10,
   backoffMode: 'default',
   requestRetry: 2,
+  cooldown: undefined,
   prefix: '',
   baseUrl: '',
   headers: [],
@@ -124,6 +126,7 @@ const buildOpenAIBaseline = (form: OpenAIFormState, testModel: string): OpenAIEd
     form.requestRetry !== undefined && Number.isFinite(form.requestRetry)
       ? Math.trunc(form.requestRetry)
       : null,
+  cooldown: normalizeProviderCooldown(form.cooldown),
   prefix: String(form.prefix ?? '').trim(),
   baseUrl: String(form.baseUrl ?? '').trim(),
   headers: normalizeHeaderEntries(form.headers),
@@ -309,6 +312,7 @@ export function AiProvidersOpenAIEditLayout() {
         priority: initialData.priority ?? 10,
         backoffMode: normalizeBackoffMode(initialData.backoffMode),
         requestRetry: normalizeRequestRetry(initialData.requestRetry),
+        cooldown: initialData.cooldown,
         prefix: initialData.prefix ?? '',
         baseUrl: initialData.baseUrl,
         headers: headersToEntries(initialData.headers),
@@ -402,6 +406,10 @@ export function AiProvidersOpenAIEditLayout() {
   const resolvedLoading = !draft?.initialized;
   const baseline = draft?.baseline ?? null;
   const normalizedHeaders = useMemo(() => normalizeHeaderEntries(form.headers), [form.headers]);
+  const normalizedCooldown = useMemo(
+    () => normalizeProviderCooldown(form.cooldown),
+    [form.cooldown]
+  );
   const normalizedModels = useMemo(
     () => normalizeModelEntries(form.modelEntries),
     [form.modelEntries]
@@ -444,6 +452,7 @@ export function AiProvidersOpenAIEditLayout() {
       baseline.priority !== normalizedPriority ||
       baseline.backoffMode !== normalizedBackoffMode ||
       baseline.requestRetry !== normalizedRequestRetry ||
+      !areProviderCooldownConfigsEqual(baseline.cooldown, normalizedCooldown) ||
       baseline.prefix !== form.prefix.trim() ||
       baseline.baseUrl !== form.baseUrl.trim() ||
       baseline.testModel !== normalizedTestModel ||
@@ -491,6 +500,7 @@ export function AiProvidersOpenAIEditLayout() {
         prefix: form.prefix?.trim() || undefined,
         baseUrl,
         headers: buildHeaderObject(form.headers),
+        cooldown: normalizedCooldown,
         apiKeyEntries: form.apiKeyEntries.map((entry: ApiKeyEntry) => ({
           apiKey: entry.apiKey.trim(),
           proxyUrl: entry.proxyUrl?.trim() || undefined,
@@ -549,6 +559,7 @@ export function AiProvidersOpenAIEditLayout() {
     form,
     handleBack,
     normalizedBackoffMode,
+    normalizedCooldown,
     providers,
     setDraftBaseline,
     showNotification,

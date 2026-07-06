@@ -133,6 +133,7 @@ func authPriorityTier(auth *Auth) priorityTier {
 		return priorityTier{entry: 0}
 	}
 	return priorityTier{
+		group: auth.GroupPriority(),
 		entry: authPriority(auth),
 	}
 }

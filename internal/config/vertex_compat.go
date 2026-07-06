@@ -37,6 +37,9 @@ type VertexCompatKey struct {
 	// ErrorControl overrides provider retry behavior for this credential.
 	ErrorControl ErrorControlPolicy `yaml:"error-control,omitempty" json:"error-control,omitempty"`
 
+	// Cooldown overrides count-based failure cooldown for this credential.
+	Cooldown ProviderCooldownConfig `yaml:"cooldown,omitempty" json:"cooldown,omitempty"`
+
 	// Headers optionally adds extra HTTP headers for requests sent with this key.
 	// Commonly used for cookies, user-agent, and other authentication headers.
 	Headers map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
@@ -83,6 +86,7 @@ func (cfg *Config) SanitizeVertexCompatKeys() {
 		entry.ProxyURL = strings.TrimSpace(entry.ProxyURL)
 		entry.Headers = NormalizeHeaders(entry.Headers)
 		entry.ExcludedModels = NormalizeExcludedModels(entry.ExcludedModels)
+		entry.Cooldown = sanitizeProviderCooldownConfig(entry.Cooldown)
 
 		// Sanitize models: remove entries without valid alias
 		sanitizedModels := make([]VertexCompatModel, 0, len(entry.Models))

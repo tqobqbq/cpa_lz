@@ -11,6 +11,7 @@
 import type { SetStateAction } from 'react';
 import { create } from 'zustand';
 import type { ProviderFormState } from '@/components/providers/types';
+import type { ProviderCooldownConfig } from '@/types';
 
 export type ClaudeTestStatus = 'idle' | 'loading' | 'success' | 'error';
 
@@ -25,6 +26,7 @@ export type ClaudeEditBaseline = {
   priority: number | null;
   backoffMode: 'default' | 'off' | 'custom';
   requestRetry: number | null;
+  cooldown?: ProviderCooldownConfig;
   prefix: string;
   baseUrl: string;
   authMode: 'auto' | 'api-key' | 'bearer';
@@ -76,6 +78,7 @@ const buildEmptyForm = (): ProviderFormState => ({
   priority: 10,
   backoffMode: 'default',
   requestRetry: 2,
+  cooldown: undefined,
   prefix: '',
   baseUrl: '',
   authMode: 'auto',

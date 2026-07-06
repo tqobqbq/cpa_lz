@@ -35,6 +35,12 @@ const (
 )
 
 var dataTag = []byte("data:")
+var eventTag = []byte("event:")
+
+type codexResponseMetadataState struct {
+	responseID string
+	createdAt  int64
+}
 
 // Streamed Codex responses may emit response.output_item.done events while leaving
 // response.completed.response.output empty. Keep the stream path aligned with the
@@ -97,6 +103,284 @@ func patchCodexCompletedOutput(eventData []byte, outputItemsByIndex map[int64][]
 
 	completedDataPatched, _ := sjson.SetRawBytes(eventData, "response.output", outputArray)
 	return completedDataPatched
+}
+
+func codexNormalizeEventType(eventName string, eventData []byte) ([]byte, string, bool) {
+	eventType := strings.TrimSpace(gjson.GetBytes(eventData, "type").String())
+	eventName = strings.TrimSpace(eventName)
+	if eventType != "" || !strings.HasPrefix(eventName, "response.") {
+		return eventData, eventType, false
+	}
+	updated, err := sjson.SetBytes(eventData, "type", eventName)
+	if err != nil || len(updated) == 0 {
+		return eventData, eventType, false
+	}
+	return updated, eventName, true
+}
+
+func codexEmptyDataEventError(eventName string, eventData []byte) error {
+	eventName = strings.TrimSpace(eventName)
+	eventData = bytes.TrimSpace(eventData)
+	if eventName != "" || !bytes.Equal(eventData, []byte("{}")) {
+		return nil
+	}
+	if strings.TrimSpace(gjson.GetBytes(eventData, "type").String()) != "" {
+		return nil
+	}
+	return helps.NewResponseFormatError(http.StatusOK, "codex_upstream_empty_sse_event", "codex upstream returned an empty SSE data event")
+}
+
+func codexResponseMetadataRepairError() error {
+	return helps.NewResponseFormatError(http.StatusOK, "codex_upstream_response_metadata_repaired", "codex upstream returned incomplete Responses SSE metadata; proxy repaired missing response fields")
+}
+
+func patchCodexResponseMetadata(eventData []byte, eventType string, model string, state *codexResponseMetadataState) ([]byte, bool) {
+	switch strings.TrimSpace(eventType) {
+	case "response.created", "response.in_progress", "response.completed":
+	default:
+		return eventData, false
+	}
+	if state == nil {
+		return eventData, false
+	}
+
+	root := gjson.ParseBytes(eventData)
+	if id := strings.TrimSpace(root.Get("response.id").String()); id != "" {
+		state.responseID = id
+	}
+	if createdAt := root.Get("response.created_at").Int(); createdAt > 0 {
+		state.createdAt = createdAt
+	}
+	if state.responseID == "" {
+		state.responseID = "resp_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	}
+	if state.createdAt <= 0 {
+		state.createdAt = time.Now().Unix()
+	}
+
+	patched := eventData
+	repaired := false
+	if responseResult := root.Get("response"); !responseResult.Exists() || !responseResult.IsObject() {
+		if updated, err := sjson.SetRawBytes(patched, "response", []byte(`{}`)); err == nil {
+			patched = updated
+			repaired = true
+		}
+	}
+	if strings.TrimSpace(gjson.GetBytes(patched, "response.id").String()) == "" {
+		if updated, err := sjson.SetBytes(patched, "response.id", state.responseID); err == nil {
+			patched = updated
+			repaired = true
+		}
+	}
+	if strings.TrimSpace(gjson.GetBytes(patched, "response.object").String()) == "" {
+		if updated, err := sjson.SetBytes(patched, "response.object", "response"); err == nil {
+			patched = updated
+			repaired = true
+		}
+	}
+	if createdAtResult := gjson.GetBytes(patched, "response.created_at"); !createdAtResult.Exists() || createdAtResult.Int() <= 0 {
+		if updated, err := sjson.SetBytes(patched, "response.created_at", state.createdAt); err == nil {
+			patched = updated
+			repaired = true
+		}
+	}
+	if model != "" && strings.TrimSpace(gjson.GetBytes(patched, "response.model").String()) == "" {
+		if updated, err := sjson.SetBytes(patched, "response.model", model); err == nil {
+			patched = updated
+			repaired = true
+		}
+	}
+	if !gjson.GetBytes(patched, "response.background").Exists() {
+		if updated, err := sjson.SetBytes(patched, "response.background", false); err == nil {
+			patched = updated
+			repaired = true
+		}
+	}
+	if !gjson.GetBytes(patched, "response.error").Exists() {
+		if updated, err := sjson.SetRawBytes(patched, "response.error", []byte(`null`)); err == nil {
+			patched = updated
+			repaired = true
+		}
+	}
+	if !gjson.GetBytes(patched, "response.output").Exists() {
+		if updated, err := sjson.SetRawBytes(patched, "response.output", []byte(`[]`)); err == nil {
+			patched = updated
+			repaired = true
+		}
+	}
+
+	status := "in_progress"
+	if eventType == "response.completed" {
+		status = "completed"
+	}
+	if strings.TrimSpace(gjson.GetBytes(patched, "response.status").String()) == "" {
+		if updated, err := sjson.SetBytes(patched, "response.status", status); err == nil {
+			patched = updated
+			repaired = true
+		}
+	}
+	return patched, repaired
+}
+
+func codexSSEEventName(line []byte) (string, bool) {
+	line = bytes.TrimSpace(line)
+	if !bytes.HasPrefix(line, eventTag) {
+		return "", false
+	}
+	return strings.ToLower(strings.TrimSpace(string(bytes.TrimSpace(line[len(eventTag):])))), true
+}
+
+func codexSSEData(line []byte) ([]byte, bool) {
+	line = bytes.TrimSpace(line)
+	if !bytes.HasPrefix(line, dataTag) {
+		return nil, false
+	}
+	return bytes.TrimSpace(line[len(dataTag):]), true
+}
+
+func codexStreamErrorFromSSE(eventName string, eventData []byte) (statusErr, bool) {
+	eventData = bytes.TrimSpace(eventData)
+	if len(eventData) == 0 || bytes.Equal(eventData, []byte("[DONE]")) {
+		return statusErr{}, false
+	}
+
+	root := gjson.ParseBytes(eventData)
+	eventType := strings.ToLower(strings.TrimSpace(root.Get("type").String()))
+	topLevelError := root.Get("error")
+	responseError := root.Get("response.error")
+	hasTopLevelError := topLevelError.Exists() && topLevelError.Type != gjson.Null
+	hasResponseError := responseError.Exists() && responseError.Type != gjson.Null
+	isErrorEvent := strings.EqualFold(strings.TrimSpace(eventName), "error") ||
+		eventType == "error" ||
+		eventType == "response.failed" ||
+		hasTopLevelError ||
+		hasResponseError
+	if !isErrorEvent {
+		return statusErr{}, false
+	}
+
+	message := firstCodexStreamErrorText(root, eventData, []string{
+		"error.message",
+		"message",
+		"response.error.message",
+	})
+	statusCode := codexStreamErrorStatusCode(root, eventData, message)
+	if message == "" {
+		message = strings.TrimSpace(string(eventData))
+	}
+	if message == "" {
+		message = http.StatusText(statusCode)
+	}
+
+	err := statusErr{code: statusCode, msg: message}
+	if retryAfter := parseCodexRetryAfter(statusCode, eventData, time.Now()); retryAfter != nil {
+		err.retryAfter = retryAfter
+	}
+	return err, true
+}
+
+func firstCodexStreamErrorText(root gjson.Result, raw []byte, paths []string) string {
+	for _, path := range paths {
+		result := root.Get(path)
+		if !result.Exists() || result.Type == gjson.Null {
+			continue
+		}
+		if result.Type == gjson.String {
+			if text := strings.TrimSpace(result.String()); text != "" {
+				return text
+			}
+			continue
+		}
+		if text := strings.TrimSpace(result.Raw); text != "" {
+			return text
+		}
+	}
+	return strings.TrimSpace(string(raw))
+}
+
+func codexStreamErrorStatusCode(root gjson.Result, raw []byte, message string) int {
+	for _, path := range []string{
+		"status_code",
+		"status",
+		"error.status_code",
+		"error.status",
+		"response.error.status_code",
+		"response.error.status",
+	} {
+		result := root.Get(path)
+		if !result.Exists() {
+			continue
+		}
+		if result.Type == gjson.Number {
+			if code := int(result.Int()); code >= 100 && code <= 599 {
+				return code
+			}
+		}
+		if codeText := strings.TrimSpace(result.String()); codeText != "" {
+			switch codeText {
+			case "400":
+				return http.StatusBadRequest
+			case "401":
+				return http.StatusUnauthorized
+			case "403":
+				return http.StatusForbidden
+			case "404":
+				return http.StatusNotFound
+			case "408":
+				return http.StatusRequestTimeout
+			case "429":
+				return http.StatusTooManyRequests
+			case "500":
+				return http.StatusInternalServerError
+			case "502":
+				return http.StatusBadGateway
+			case "503":
+				return http.StatusServiceUnavailable
+			case "504":
+				return http.StatusGatewayTimeout
+			}
+		}
+	}
+
+	fields := []string{message, string(raw)}
+	for _, path := range []string{
+		"code",
+		"type",
+		"error.code",
+		"error.type",
+		"response.error.code",
+		"response.error.type",
+	} {
+		if result := root.Get(path); result.Exists() && result.Type != gjson.Null {
+			fields = append(fields, result.String(), result.Raw)
+		}
+	}
+	lower := strings.ToLower(strings.Join(fields, " "))
+	switch {
+	case strings.Contains(lower, "concurrency limit exceeded"),
+		strings.Contains(lower, "rate limit"),
+		strings.Contains(lower, "rate_limit"),
+		strings.Contains(lower, "too many requests"),
+		strings.Contains(lower, "tokens per min"),
+		strings.Contains(lower, "tpm"),
+		strings.Contains(lower, "usage_limit"),
+		strings.Contains(lower, "quota"):
+		return http.StatusTooManyRequests
+	case strings.Contains(lower, "invalid_api_key"),
+		strings.Contains(lower, "unauthorized"):
+		return http.StatusUnauthorized
+	case strings.Contains(lower, "forbidden"),
+		strings.Contains(lower, "permission"):
+		return http.StatusForbidden
+	case strings.Contains(lower, "model_not_found"),
+		strings.Contains(lower, "not found"):
+		return http.StatusNotFound
+	case strings.Contains(lower, "timeout"),
+		strings.Contains(lower, "timed out"):
+		return http.StatusRequestTimeout
+	default:
+		return http.StatusInternalServerError
+	}
 }
 
 // CodexExecutor is a stateless executor for Codex (OpenAI Responses API entrypoint).
@@ -234,17 +518,49 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	lines := bytes.Split(data, []byte("\n"))
 	outputItemsByIndex := make(map[int64][]byte)
 	var outputItemsFallback [][]byte
+	var metadataState codexResponseMetadataState
+	var compatibilityRepairErr error
+	var completedPayload []byte
+	var sawCompleted bool
+	var currentEvent string
 	for _, line := range lines {
-		if !bytes.HasPrefix(line, dataTag) {
+		if eventName, ok := codexSSEEventName(line); ok {
+			currentEvent = eventName
 			continue
+		}
+		if len(bytes.TrimSpace(line)) == 0 && currentEvent == "error" {
+			err = statusErr{code: http.StatusInternalServerError, msg: "codex upstream stream error"}
+			return resp, err
+		}
+		eventData, ok := codexSSEData(line)
+		if !ok {
+			continue
+		}
+		eventName := currentEvent
+		currentEvent = ""
+		eventData, eventType, typeRepaired := codexNormalizeEventType(eventName, eventData)
+		if typeRepaired && compatibilityRepairErr == nil {
+			compatibilityRepairErr = codexResponseMetadataRepairError()
+		}
+		if errEmptyEvent := codexEmptyDataEventError(eventName, eventData); errEmptyEvent != nil {
+			helps.RecordAPIResponseError(ctx, e.cfg, errEmptyEvent)
+			err = errEmptyEvent
+			return resp, err
+		}
+		if streamErr, ok := codexStreamErrorFromSSE(eventName, eventData); ok {
+			err = streamErr
+			return resp, err
 		}
 		if errValidate := helps.ValidateDownstreamStreamChunkWithOutputFilterForProvider(sdktranslator.FormatOpenAIResponse, e.Identifier(), line, helps.OutputFilterFromConfig(e.cfg)); errValidate != nil {
 			err = errValidate
 			return resp, err
 		}
 
-		eventData := bytes.TrimSpace(line[5:])
-		eventType := gjson.GetBytes(eventData, "type").String()
+		var metadataRepaired bool
+		eventData, metadataRepaired = patchCodexResponseMetadata(eventData, eventType, baseModel, &metadataState)
+		if metadataRepaired && compatibilityRepairErr == nil {
+			compatibilityRepairErr = codexResponseMetadataRepairError()
+		}
 
 		if eventType == "response.output_item.done" {
 			itemResult := gjson.GetBytes(eventData, "item")
@@ -264,32 +580,12 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 			continue
 		}
 
+		reporter.SetUpstreamModelFromPayload(eventData)
 		if detail, ok := helps.ParseCodexUsage(eventData); ok {
 			reporter.SetDetail(detail)
 		}
 
-		completedData := eventData
-		outputResult := gjson.GetBytes(completedData, "response.output")
-		shouldPatchOutput := (!outputResult.Exists() || !outputResult.IsArray() || len(outputResult.Array()) == 0) && (len(outputItemsByIndex) > 0 || len(outputItemsFallback) > 0)
-		if shouldPatchOutput {
-			completedDataPatched := completedData
-			completedDataPatched, _ = sjson.SetRawBytes(completedDataPatched, "response.output", []byte(`[]`))
-
-			indexes := make([]int64, 0, len(outputItemsByIndex))
-			for idx := range outputItemsByIndex {
-				indexes = append(indexes, idx)
-			}
-			sort.Slice(indexes, func(i, j int) bool {
-				return indexes[i] < indexes[j]
-			})
-			for _, idx := range indexes {
-				completedDataPatched, _ = sjson.SetRawBytes(completedDataPatched, "response.output.-1", outputItemsByIndex[idx])
-			}
-			for _, item := range outputItemsFallback {
-				completedDataPatched, _ = sjson.SetRawBytes(completedDataPatched, "response.output.-1", item)
-			}
-			completedData = completedDataPatched
-		}
+		completedData := patchCodexCompletedOutput(eventData, outputItemsByIndex, outputItemsFallback)
 
 		var param any
 		out := sdktranslator.TranslateNonStream(ctx, to, from, req.Model, originalPayload, body, completedData, &param)
@@ -297,8 +593,16 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 			err = errValidate
 			return resp, err
 		}
-		reporter.PublishCurrent(ctx)
-		resp = cliproxyexecutor.Response{Payload: out, Headers: httpResp.Header.Clone()}
+		completedPayload = out
+		sawCompleted = true
+	}
+	if sawCompleted {
+		if compatibilityRepairErr != nil {
+			reporter.PublishFailureWithError(ctx, compatibilityRepairErr)
+		} else {
+			reporter.PublishCurrent(ctx)
+		}
+		resp = cliproxyexecutor.Response{Payload: completedPayload, Headers: httpResp.Header.Clone()}
 		return resp, nil
 	}
 	if len(bytes.TrimSpace(data)) == 0 {
@@ -499,7 +803,11 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		var param any
 		outputItemsByIndex := make(map[int64][]byte)
 		var outputItemsFallback [][]byte
+		var metadataState codexResponseMetadataState
+		var compatibilityRepairErr error
 		var linesScanned int
+		var currentEvent string
+		var sawCompleted bool
 		for scanner.Scan() {
 			line := scanner.Bytes()
 			linesScanned++
@@ -509,20 +817,59 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 				out <- cliproxyexecutor.StreamChunk{Err: errValidate}
 				return
 			}
+			if eventName, ok := codexSSEEventName(line); ok {
+				currentEvent = eventName
+				if eventName == "error" {
+					continue
+				}
+				if eventName == "" {
+					continue
+				}
+			}
+			if len(bytes.TrimSpace(line)) == 0 && currentEvent == "error" {
+				streamErr := statusErr{code: http.StatusInternalServerError, msg: "codex upstream stream error"}
+				reporter.PublishFailureWithError(ctx, streamErr)
+				out <- cliproxyexecutor.StreamChunk{Err: streamErr}
+				return
+			}
 			translatedLine := bytes.Clone(line)
 
 			if bytes.HasPrefix(line, dataTag) {
 				data := bytes.TrimSpace(line[5:])
-				switch gjson.GetBytes(data, "type").String() {
+				eventName := currentEvent
+				currentEvent = ""
+				data, eventType, typeRepaired := codexNormalizeEventType(eventName, data)
+				if typeRepaired && compatibilityRepairErr == nil {
+					compatibilityRepairErr = codexResponseMetadataRepairError()
+				}
+				if errEmptyEvent := codexEmptyDataEventError(eventName, data); errEmptyEvent != nil {
+					helps.RecordAPIResponseError(ctx, e.cfg, errEmptyEvent)
+					reporter.PublishFailureWithError(ctx, errEmptyEvent)
+					out <- cliproxyexecutor.StreamChunk{Err: errEmptyEvent}
+					return
+				}
+				if streamErr, ok := codexStreamErrorFromSSE(eventName, data); ok {
+					reporter.PublishFailureWithError(ctx, streamErr)
+					out <- cliproxyexecutor.StreamChunk{Err: streamErr}
+					return
+				}
+				var metadataRepaired bool
+				data, metadataRepaired = patchCodexResponseMetadata(data, eventType, baseModel, &metadataState)
+				if metadataRepaired && compatibilityRepairErr == nil {
+					compatibilityRepairErr = codexResponseMetadataRepairError()
+				}
+				switch eventType {
 				case "response.output_item.done":
 					collectCodexOutputItemDone(data, outputItemsByIndex, &outputItemsFallback)
 				case "response.completed":
+					sawCompleted = true
+					reporter.SetUpstreamModelFromPayload(data)
 					if detail, ok := helps.ParseCodexUsage(data); ok {
 						reporter.SetDetail(detail)
 					}
 					data = patchCodexCompletedOutput(data, outputItemsByIndex, outputItemsFallback)
-					translatedLine = append([]byte("data: "), data...)
 				}
+				translatedLine = append([]byte("data: "), data...)
 			}
 
 			chunks := sdktranslator.TranslateStream(ctx, to, from, req.Model, originalPayload, body, translatedLine, &param)
@@ -547,7 +894,17 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			out <- cliproxyexecutor.StreamChunk{Err: errEmpty}
 			return
 		}
-		reporter.PublishCurrent(ctx)
+		if !sawCompleted {
+			errIncomplete := statusErr{code: http.StatusRequestTimeout, msg: "stream error: stream disconnected before completion: stream closed before response.completed"}
+			reporter.PublishFailureWithError(ctx, errIncomplete)
+			out <- cliproxyexecutor.StreamChunk{Err: errIncomplete}
+			return
+		}
+		if compatibilityRepairErr != nil {
+			reporter.PublishFailureWithError(ctx, compatibilityRepairErr)
+		} else {
+			reporter.PublishCurrent(ctx)
+		}
 	}()
 	return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil
 }

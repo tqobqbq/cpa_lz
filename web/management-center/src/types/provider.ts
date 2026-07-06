@@ -13,6 +13,12 @@ export interface ModelAlias {
 export type BackoffMode = 'default' | 'off' | 'custom';
 export type ClaudeAuthMode = 'auto' | 'api-key' | 'bearer';
 
+export interface ProviderCooldownConfig {
+  start?: number;
+  exponent?: number;
+  max?: number;
+}
+
 export interface ApiKeyEntry {
   apiKey: string;
   proxyUrl?: string;
@@ -34,6 +40,7 @@ export interface GeminiKeyConfig {
   proxyUrl?: string;
   backoffMode?: BackoffMode;
   requestRetry?: number;
+  cooldown?: ProviderCooldownConfig;
   models?: ModelAlias[];
   headers?: Record<string, string>;
   excludedModels?: string[];
@@ -51,6 +58,7 @@ export interface ProviderKeyConfig {
   proxyUrl?: string;
   backoffMode?: BackoffMode;
   requestRetry?: number;
+  cooldown?: ProviderCooldownConfig;
   headers?: Record<string, string>;
   models?: ModelAlias[];
   excludedModels?: string[];
@@ -68,6 +76,7 @@ export interface OpenAIProviderConfig {
   priority?: number;
   backoffMode?: BackoffMode;
   requestRetry?: number;
+  cooldown?: ProviderCooldownConfig;
   testModel?: string;
   authIndex?: string;
   [key: string]: unknown;

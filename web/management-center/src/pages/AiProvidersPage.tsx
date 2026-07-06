@@ -9,6 +9,7 @@ import {
   GeminiSection,
   OpenAISection,
   VertexSection,
+  ProviderCooldownFields,
   ProviderNav,
   AiProviderQuickImportPanel,
   type ProviderId,
@@ -23,9 +24,19 @@ import {
 } from '@/components/providers/utils';
 import { usePageTransitionLayer } from '@/components/common/PageTransitionLayer';
 import { useHeaderRefresh } from '@/hooks/useHeaderRefresh';
-import { ampcodeApi, apiCallApi, getApiCallErrorMessage, providersApi } from '@/services/api';
+import { ampcodeApi, apiCallApi, configApi, getApiCallErrorMessage, providersApi } from '@/services/api';
 import { useAuthStore, useConfigStore, useNotificationStore, useThemeStore } from '@/stores';
-import type { GeminiKeyConfig, OpenAIProviderConfig, ProviderKeyConfig } from '@/types';
+import type {
+  GeminiKeyConfig,
+  OpenAIProviderConfig,
+  ProviderCooldownConfig,
+  ProviderKeyConfig,
+} from '@/types';
+import {
+  areProviderCooldownConfigsEqual,
+  normalizeProviderCooldown,
+  withProviderCooldownDefaults,
+} from '@/utils/providerCooldown';
 import {
   buildProviderTestModelOptions,
   buildProviderTestModelPlaceholder,
@@ -54,7 +65,6 @@ import {
 import styles from './AiProvidersPage.module.scss';
 
 const PROVIDER_TEST_TIMEOUT_MS = 30_000;
-const DEFAULT_ANTHROPIC_VERSION = '2023-06-01';
 const PROVIDER_IDS: ProviderId[] = ['gemini', 'codex', 'claude', 'vertex', 'ampcode', 'openai'];
 
 type ProviderTestDialogState = {
@@ -114,6 +124,10 @@ export function AiProvidersPage() {
   const [openaiProviders, setOpenaiProviders] = useState<OpenAIProviderConfig[]>(
     () => config?.openaiCompatibility || []
   );
+  const [providerCooldown, setProviderCooldown] = useState<ProviderCooldownConfig>(() =>
+    withProviderCooldownDefaults(config?.providerCooldown)
+  );
+  const [savingProviderCooldown, setSavingProviderCooldown] = useState(false);
 
   const [activeProviderId, setActiveProviderId] = useState<ProviderId>('gemini');
   const [configSwitchingKey, setConfigSwitchingKey] = useState<string | null>(null);
@@ -166,6 +180,49 @@ export function AiProvidersPage() {
     return '';
   };
 
+  const savedProviderCooldown = useMemo(
+    () => withProviderCooldownDefaults(config?.providerCooldown),
+    [config?.providerCooldown]
+  );
+  const normalizedProviderCooldown = useMemo(
+    () => withProviderCooldownDefaults(providerCooldown),
+    [providerCooldown]
+  );
+  const isProviderCooldownDirty = useMemo(
+    () =>
+      !areProviderCooldownConfigsEqual(savedProviderCooldown, normalizedProviderCooldown),
+    [normalizedProviderCooldown, savedProviderCooldown]
+  );
+
+  const saveProviderCooldown = useCallback(async () => {
+    if (disableControls || savingProviderCooldown || !isProviderCooldownDirty) return;
+
+    const payload = normalizeProviderCooldown(normalizedProviderCooldown);
+    if (!payload) return;
+
+    setSavingProviderCooldown(true);
+    try {
+      await configApi.updateProviderCooldown(payload);
+      updateConfigValue('provider-cooldown', payload);
+      clearCache('provider-cooldown');
+      showNotification(t('ai_providers.cooldown_global_saved'), 'success');
+    } catch (err: unknown) {
+      showNotification(`${t('notification.update_failed')}: ${getErrorMessage(err)}`, 'error');
+    } finally {
+      setSavingProviderCooldown(false);
+    }
+  }, [
+    clearCache,
+    disableControls,
+    getErrorMessage,
+    isProviderCooldownDirty,
+    normalizedProviderCooldown,
+    savingProviderCooldown,
+    showNotification,
+    t,
+    updateConfigValue,
+  ]);
+
   const loadConfigs = useCallback(async () => {
     const hasValidCache = isCacheValid();
     if (!hasValidCache) {
@@ -189,6 +246,7 @@ export function AiProvidersPage() {
       setClaudeConfigs(data?.claudeApiKeys || []);
       setVertexConfigs(data?.vertexApiKeys || []);
       setOpenaiProviders(data?.openaiCompatibility || []);
+      setProviderCooldown(withProviderCooldownDefaults(data?.providerCooldown));
 
       if (vertexResult.status === 'fulfilled') {
         setVertexConfigs(vertexResult.value || []);
@@ -225,12 +283,14 @@ export function AiProvidersPage() {
     if (config?.claudeApiKeys) setClaudeConfigs(config.claudeApiKeys);
     if (config?.vertexApiKeys) setVertexConfigs(config.vertexApiKeys);
     if (config?.openaiCompatibility) setOpenaiProviders(config.openaiCompatibility);
+    if (config) setProviderCooldown(withProviderCooldownDefaults(config.providerCooldown));
   }, [
     config?.geminiApiKeys,
     config?.codexApiKeys,
     config?.claudeApiKeys,
     config?.vertexApiKeys,
     config?.openaiCompatibility,
+    config?.providerCooldown,
   ]);
 
   useHeaderRefresh(refreshKeyStats, isCurrentLayer);
@@ -389,39 +449,17 @@ export function AiProvidersPage() {
       });
     }
 
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-      ...(activeProviderTest.item.headers ?? {}),
-    };
-    const apiKey = String(activeProviderTest.item.apiKey ?? '').trim();
-    const hasApiKeyHeader = hasHeader(headers, 'x-api-key');
-    const apiKeyFromAuthorization = resolveBearerTokenFromAuthorization(headers);
-    const resolvedApiKey = apiKey || apiKeyFromAuthorization;
-
-    if (!hasHeader(headers, 'anthropic-version')) {
-      headers['anthropic-version'] = DEFAULT_ANTHROPIC_VERSION;
-    }
-    if (!Object.prototype.hasOwnProperty.call(headers, 'Anthropic-Version')) {
-      headers['Anthropic-Version'] = headers['anthropic-version'] ?? DEFAULT_ANTHROPIC_VERSION;
-    }
-    if (!hasApiKeyHeader) {
-      headers['x-api-key'] = resolvedApiKey || '<api-key>';
-    }
-    if (!Object.prototype.hasOwnProperty.call(headers, 'X-Api-Key')) {
-      headers['X-Api-Key'] = headers['x-api-key'] ?? resolvedApiKey ?? '<api-key>';
-    }
-
-    return buildApiCallCommandPreview({
-      method: 'POST',
-      url: buildClaudeMessagesEndpoint(activeProviderTest.item.baseUrl ?? ''),
-      header: headers,
-      data: JSON.stringify({
+    return buildApiCallCommandPreview(
+      buildClaudeProviderTestRequest({
+        apiKey: String(activeProviderTest.item.apiKey ?? '').trim() || '<api-key>',
+        authMode: activeProviderTest.item.authMode ?? 'auto',
+        baseUrl: activeProviderTest.item.baseUrl ?? '',
+        headers: activeProviderTest.item.headers ?? {},
         model:
           resolvedProviderTestModel || buildProviderTestModelPlaceholder(providerTestDefaultModel),
-        max_tokens: 8,
-        messages: [{ role: 'user', content: 'Hi' }],
-      }),
-    });
+        proxyUrl: activeProviderTest.item.proxyUrl?.trim() || undefined,
+      })
+    );
   }, [activeProviderTest, providerTestDefaultModel, resolvedProviderTestModel]);
 
   useEffect(() => {
@@ -736,41 +774,23 @@ export function AiProvidersPage() {
             throw new Error(t('ai_providers.claude_test_endpoint_invalid'));
           }
 
-          const headers = {
-            'Content-Type': 'application/json',
-            ...(activeProviderTest.item.headers ?? {}),
-          } as Record<string, string>;
+          const headers = { ...(activeProviderTest.item.headers ?? {}) } as Record<string, string>;
           const hasApiKeyHeader = hasHeader(headers, 'x-api-key');
+          const hasAuthorizationHeader = hasHeader(headers, 'authorization');
           const apiKey = String(activeProviderTest.item.apiKey ?? '').trim();
           const resolvedApiKey = apiKey || resolveBearerTokenFromAuthorization(headers);
-          if (!resolvedApiKey && !hasApiKeyHeader) {
+          if (!resolvedApiKey && !hasApiKeyHeader && !hasAuthorizationHeader) {
             throw new Error(t('ai_providers.claude_test_key_required'));
           }
-          if (!hasHeader(headers, 'anthropic-version')) {
-            headers['anthropic-version'] = DEFAULT_ANTHROPIC_VERSION;
-          }
-          if (!Object.prototype.hasOwnProperty.call(headers, 'Anthropic-Version')) {
-            headers['Anthropic-Version'] =
-              headers['anthropic-version'] ?? DEFAULT_ANTHROPIC_VERSION;
-          }
-          if (!hasApiKeyHeader && resolvedApiKey) {
-            headers['x-api-key'] = resolvedApiKey;
-          }
-          if (!Object.prototype.hasOwnProperty.call(headers, 'X-Api-Key') && resolvedApiKey) {
-            headers['X-Api-Key'] = resolvedApiKey;
-          }
 
-          requestPayload = {
-            method: 'POST',
-            url: endpoint,
-            header: headers,
-            data: JSON.stringify({
-              model: modelName,
-              max_tokens: 8,
-              messages: [{ role: 'user', content: 'Hi' }],
-            }),
+          requestPayload = buildClaudeProviderTestRequest({
+            apiKey: resolvedApiKey,
+            authMode: activeProviderTest.item.authMode ?? 'auto',
+            baseUrl: endpoint,
+            headers,
+            model: modelName,
             proxyUrl: activeProviderTest.item.proxyUrl?.trim() || undefined,
-          };
+          });
         } else {
           if (!activeCommand) {
             throw new Error(t('ai_providers.provider_test_command_invalid'));
@@ -1261,6 +1281,33 @@ export function AiProvidersPage() {
 
         <div className={styles.providersLayout}>
           <div className={styles.providersMain}>
+            <section className={styles.globalCooldownSection}>
+              <div className={styles.globalCooldownHeader}>
+                <div className={styles.globalCooldownTitleGroup}>
+                  <h2>{t('ai_providers.cooldown_global_title')}</h2>
+                </div>
+                <Button
+                  size="sm"
+                  onClick={() => void saveProviderCooldown()}
+                  loading={savingProviderCooldown}
+                  disabled={
+                    disableControls ||
+                    savingProviderCooldown ||
+                    loading ||
+                    !isProviderCooldownDirty
+                  }
+                >
+                  {t('ai_providers.cooldown_global_save')}
+                </Button>
+              </div>
+              <ProviderCooldownFields
+                scope="global"
+                value={providerCooldown}
+                onChange={(value) => setProviderCooldown(withProviderCooldownDefaults(value))}
+                disabled={disableControls || savingProviderCooldown || loading}
+              />
+            </section>
+
             <div id="provider-gemini" className={styles.providerSection}>
               <GeminiSection
                 configs={geminiKeys}

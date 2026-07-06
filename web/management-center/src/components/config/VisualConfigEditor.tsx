@@ -154,12 +154,6 @@ const ERROR_CONTROL_POLICY_FIELDS: Array<{
   type: 'number' | 'text';
 }> = [
   {
-    field: 'providerRetries',
-    labelKey: 'provider_retries',
-    placeholder: '1',
-    type: 'number',
-  },
-  {
     field: 'retryRounds',
     labelKey: 'retry_rounds',
     placeholder: '1',
@@ -187,7 +181,6 @@ const ERROR_CONTROL_POLICY_FIELDS: Array<{
 
 function createEmptyErrorControlPolicy(): ErrorControlPolicyValues {
   return {
-    providerRetries: '',
     retryRounds: '',
     roundBackoffBase: '',
     roundBackoffExponent: '',
@@ -1156,12 +1149,14 @@ export function VisualConfigEditor({
                     value={values.routingStrategy}
                     options={[
                       {
-                        value: 'round-robin',
-                        label: t('config_management.visual.sections.network.strategy_round_robin'),
+                        value: 'random',
+                        label: t('config_management.visual.sections.network.strategy_random'),
                       },
                       {
-                        value: 'fill-first',
-                        label: t('config_management.visual.sections.network.strategy_fill_first'),
+                        value: 'last-success',
+                        label: t(
+                          'config_management.visual.sections.network.strategy_last_success'
+                        ),
                       },
                     ]}
                     id={`${routingStrategyLabelId}-select`}
@@ -1176,6 +1171,38 @@ export function VisualConfigEditor({
                   />
                 </FieldShell>
                 <Input
+                  label={t(
+                    'config_management.visual.sections.network.parallel_requests_min_round'
+                  )}
+                  type="number"
+                  placeholder="1"
+                  value={values.routingParallelRequestsMinRound}
+                  onChange={(e) =>
+                    onChange({ routingParallelRequestsMinRound: e.target.value })
+                  }
+                  disabled={disabled}
+                  error={getValidationMessage(
+                    t,
+                    validationErrors?.routingParallelRequestsMinRound
+                  )}
+                />
+                <Input
+                  label={t(
+                    'config_management.visual.sections.network.parallel_requests_min_failures'
+                  )}
+                  type="number"
+                  placeholder="1"
+                  value={values.routingParallelRequestsMinFailures}
+                  onChange={(e) =>
+                    onChange({ routingParallelRequestsMinFailures: e.target.value })
+                  }
+                  disabled={disabled}
+                  error={getValidationMessage(
+                    t,
+                    validationErrors?.routingParallelRequestsMinFailures
+                  )}
+                />
+                <Input
                   label={t('config_management.visual.sections.network.session_affinity_ttl')}
                   placeholder="1h"
                   value={values.routingSessionAffinityTTL}
@@ -1185,6 +1212,19 @@ export function VisualConfigEditor({
               </SectionGrid>
 
               <SectionGrid>
+                <ToggleRow
+                  title={t(
+                    'config_management.visual.sections.network.parallel_requests_enabled'
+                  )}
+                  description={t(
+                    'config_management.visual.sections.network.parallel_requests_enabled_desc'
+                  )}
+                  checked={values.routingParallelRequestsEnabled}
+                  disabled={disabled}
+                  onChange={(routingParallelRequestsEnabled) =>
+                    onChange({ routingParallelRequestsEnabled })
+                  }
+                />
                 <ToggleRow
                   title={t('config_management.visual.sections.network.force_model_prefix')}
                   description={t(

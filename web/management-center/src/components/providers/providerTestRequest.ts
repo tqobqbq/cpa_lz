@@ -18,7 +18,6 @@ export type ProviderTestRequestOptions = {
 
 const DEFAULT_CODEX_USER_AGENT =
   'codex-tui/0.118.0 (Mac OS 26.3.1; arm64) iTerm.app/3.6.9 (codex-tui; 0.118.0)';
-const DEFAULT_CLAUDE_USER_AGENT = 'claude-cli/2.1.77 (external, cli)';
 const DEFAULT_ANTHROPIC_VERSION = '2023-06-01';
 
 const hasHeader = (headers: Record<string, string>, name: string) => {
@@ -33,6 +32,16 @@ const resolveBearerTokenFromAuthorization = (headers: Record<string, string>): s
   if (!value) return '';
   const match = value.match(/^Bearer\s+(.+)$/i);
   return match?.[1]?.trim() || '';
+};
+
+const isClaudeOAuthToken = (value: string) => value.includes('sk-ant-oat');
+
+const resolveClaudeAuthMode = (
+  authMode: ProviderTestRequestOptions['authMode'],
+  apiKey: string
+) => {
+  if (authMode === 'api-key' || authMode === 'bearer') return authMode;
+  return isClaudeOAuthToken(apiKey) ? 'bearer' : 'api-key';
 };
 
 const normalizeBaseUrl = (baseUrl: string, fallback: string) => {
@@ -104,34 +113,23 @@ export function buildClaudeProviderTestRequest(
     'Content-Type': 'application/json',
     ...(options.headers ?? {}),
   };
-  let resolvedApiKey = String(options.apiKey ?? '').trim();
+  const optionApiKey = String(options.apiKey ?? '').trim();
+  let resolvedApiKey = optionApiKey === '<api-key>' ? '' : optionApiKey;
   if (!resolvedApiKey && !hasHeader(headers, 'x-api-key')) {
     resolvedApiKey = resolveBearerTokenFromAuthorization(headers);
   }
+  const credentialForHeader = resolvedApiKey || optionApiKey;
 
   if (!hasHeader(headers, 'anthropic-version')) {
     headers['anthropic-version'] = DEFAULT_ANTHROPIC_VERSION;
   }
-  if (!Object.prototype.hasOwnProperty.call(headers, 'Anthropic-Version')) {
-    headers['Anthropic-Version'] = headers['anthropic-version'] ?? DEFAULT_ANTHROPIC_VERSION;
-  }
-  const authMode = options.authMode ?? 'auto';
+  const authMode = resolveClaudeAuthMode(options.authMode ?? 'auto', credentialForHeader);
   if (authMode === 'bearer') {
-    if (!hasHeader(headers, 'authorization') && resolvedApiKey) {
-      headers.Authorization = `Bearer ${resolvedApiKey}`;
+    if (!hasHeader(headers, 'authorization') && credentialForHeader) {
+      headers.Authorization = `Bearer ${credentialForHeader}`;
     }
-  } else if (!hasHeader(headers, 'x-api-key') && resolvedApiKey) {
-    headers['x-api-key'] = resolvedApiKey;
-  }
-  if (
-    authMode !== 'bearer' &&
-    !Object.prototype.hasOwnProperty.call(headers, 'X-Api-Key') &&
-    resolvedApiKey
-  ) {
-    headers['X-Api-Key'] = headers['x-api-key'] ?? resolvedApiKey;
-  }
-  if (!hasHeader(headers, 'user-agent')) {
-    headers['User-Agent'] = DEFAULT_CLAUDE_USER_AGENT;
+  } else if (!hasHeader(headers, 'x-api-key') && credentialForHeader) {
+    headers['x-api-key'] = credentialForHeader;
   }
 
   return {

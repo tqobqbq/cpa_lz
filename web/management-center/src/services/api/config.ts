@@ -3,7 +3,7 @@
  */
 
 import { apiClient } from './client';
-import type { Config } from '@/types';
+import type { Config, ProviderCooldownConfig } from '@/types';
 import { normalizeConfigResponse } from './transformers';
 
 export const configApi = {
@@ -39,6 +39,12 @@ export const configApi = {
    * 更新重试次数
    */
   updateRequestRetry: (retryCount: number) => apiClient.put('/request-retry', { value: retryCount }),
+
+  /**
+   * 更新 Provider 调用失败冷却策略
+   */
+  updateProviderCooldown: (value: ProviderCooldownConfig) =>
+    apiClient.put('/provider-cooldown', { value }),
 
   /**
    * 配额回退：切换项目
@@ -114,7 +120,7 @@ export const configApi = {
   async getRoutingStrategy(): Promise<string> {
     const data = await apiClient.get<Record<string, unknown>>('/routing/strategy');
     const strategy = data?.strategy ?? data?.['routing-strategy'] ?? data?.routingStrategy;
-    return typeof strategy === 'string' ? strategy : 'round-robin';
+    return typeof strategy === 'string' ? strategy : 'random';
   },
 
   /**

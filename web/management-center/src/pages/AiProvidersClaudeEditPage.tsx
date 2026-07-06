@@ -8,6 +8,7 @@ import { Select } from '@/components/ui/Select';
 import { HeaderInputList } from '@/components/ui/HeaderInputList';
 import { ModelInputList } from '@/components/ui/ModelInputList';
 import { ToggleSwitch } from '@/components/ui/ToggleSwitch';
+import { ProviderCooldownFields } from '@/components/providers';
 import { ProviderTestPanel } from '@/components/providers/ProviderTestPanel';
 import { useEdgeSwipeBack } from '@/hooks/useEdgeSwipeBack';
 import { SecondaryScreenShell } from '@/components/common/SecondaryScreenShell';
@@ -44,7 +45,6 @@ import styles from './AiProvidersPage.module.scss';
 import layoutStyles from './AiProvidersEditLayout.module.scss';
 
 const CLAUDE_TEST_TIMEOUT_MS = 30_000;
-const DEFAULT_ANTHROPIC_VERSION = '2023-06-01';
 
 const getErrorMessage = (err: unknown) => {
   if (err instanceof Error) return err.message;
@@ -287,37 +287,11 @@ export function AiProvidersClaudeEditPage() {
         return;
       }
 
-      const headers: Record<string, string> = {
-        'Content-Type': 'application/json',
-        ...customHeaders,
-      };
-
-      if (!hasHeader(headers, 'anthropic-version')) {
-        headers['anthropic-version'] = DEFAULT_ANTHROPIC_VERSION;
-      }
-      if (!Object.prototype.hasOwnProperty.call(headers, 'Anthropic-Version')) {
-        headers['Anthropic-Version'] = headers['anthropic-version'] ?? DEFAULT_ANTHROPIC_VERSION;
-      }
-      if (authMode === 'bearer') {
-        if (!hasAuthorizationHeader && resolvedApiKey) {
-          headers.Authorization = `Bearer ${resolvedApiKey}`;
-        }
-      } else if (!hasApiKeyHeader && resolvedApiKey) {
-        headers['x-api-key'] = resolvedApiKey;
-      }
-      if (
-        authMode !== 'bearer' &&
-        !Object.prototype.hasOwnProperty.call(headers, 'X-Api-Key') &&
-        resolvedApiKey
-      ) {
-        headers['X-Api-Key'] = resolvedApiKey;
-      }
-
       requestPayload = buildClaudeProviderTestRequest({
         apiKey: resolvedApiKey,
         authMode,
         baseUrl: endpoint,
-        headers,
+        headers: customHeaders,
         model: modelName,
         proxyUrl: form.proxyUrl?.trim() || undefined,
       });
@@ -512,6 +486,11 @@ export function AiProvidersClaudeEditPage() {
                 disabled={saving || disableControls || isTesting}
               />
             )}
+            <ProviderCooldownFields
+              value={form.cooldown}
+              onChange={(cooldown) => setForm((prev) => ({ ...prev, cooldown }))}
+              disabled={saving || disableControls || isTesting}
+            />
             <Input
               label={t('ai_providers.prefix_label')}
               placeholder={t('ai_providers.prefix_placeholder')}

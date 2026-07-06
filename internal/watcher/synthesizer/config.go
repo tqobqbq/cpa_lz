@@ -30,7 +30,7 @@ func normalizeBackoffMode(raw string) string {
 	}
 }
 
-func buildBackoffMetadata(mode string, requestRetry *int, errorControl config.ErrorControlPolicy) map[string]any {
+func buildBackoffMetadata(mode string, requestRetry *int, errorControl config.ErrorControlPolicy, cooldown config.ProviderCooldownConfig) map[string]any {
 	metadata := map[string]any{
 		"backoff_mode": normalizeBackoffMode(mode),
 	}
@@ -40,13 +40,6 @@ func buildBackoffMetadata(mode string, requestRetry *int, errorControl config.Er
 			retry = 0
 		}
 		metadata["request_retry"] = retry
-	}
-	if errorControl.ProviderRetries != nil {
-		retries := *errorControl.ProviderRetries
-		if retries < 1 {
-			retries = 1
-		}
-		metadata["provider_retries"] = retries
 	}
 	if errorControl.RetryRounds != nil {
 		rounds := *errorControl.RetryRounds
@@ -75,6 +68,27 @@ func buildBackoffMetadata(mode string, requestRetry *int, errorControl config.Er
 			v = 60
 		}
 		metadata["round_backoff_max"] = v
+	}
+	if cooldown.Start != nil {
+		v := *cooldown.Start
+		if v < 1 {
+			v = config.DefaultProviderCooldownStart
+		}
+		metadata["cooldown_start"] = v
+	}
+	if cooldown.Exponent != nil {
+		v := *cooldown.Exponent
+		if v <= 0 {
+			v = config.DefaultProviderCooldownExponent
+		}
+		metadata["cooldown_exponent"] = v
+	}
+	if cooldown.Max != nil {
+		v := *cooldown.Max
+		if v < 1 {
+			v = config.DefaultProviderCooldownMax
+		}
+		metadata["cooldown_max"] = v
 	}
 	return metadata
 }
@@ -160,7 +174,7 @@ func (s *ConfigSynthesizer) synthesizeGeminiKeys(ctx *SynthesisContext) []*corea
 			Status:     coreauth.StatusActive,
 			ProxyURL:   proxyURL,
 			Attributes: attrs,
-			Metadata:   buildBackoffMetadata(entry.BackoffMode, entry.RequestRetry, entry.ErrorControl),
+			Metadata:   buildBackoffMetadata(entry.BackoffMode, entry.RequestRetry, entry.ErrorControl, entry.Cooldown),
 			CreatedAt:  now,
 			UpdatedAt:  now,
 		}
@@ -211,7 +225,7 @@ func (s *ConfigSynthesizer) synthesizeClaudeKeys(ctx *SynthesisContext) []*corea
 			Status:     coreauth.StatusActive,
 			ProxyURL:   proxyURL,
 			Attributes: attrs,
-			Metadata:   buildBackoffMetadata(ck.BackoffMode, ck.RequestRetry, ck.ErrorControl),
+			Metadata:   buildBackoffMetadata(ck.BackoffMode, ck.RequestRetry, ck.ErrorControl, ck.Cooldown),
 			CreatedAt:  now,
 			UpdatedAt:  now,
 		}
@@ -279,7 +293,7 @@ func (s *ConfigSynthesizer) synthesizeCodexKeys(ctx *SynthesisContext) []*coreau
 			Status:     coreauth.StatusActive,
 			ProxyURL:   proxyURL,
 			Attributes: attrs,
-			Metadata:   buildBackoffMetadata(ck.BackoffMode, ck.RequestRetry, ck.ErrorControl),
+			Metadata:   buildBackoffMetadata(ck.BackoffMode, ck.RequestRetry, ck.ErrorControl, ck.Cooldown),
 			CreatedAt:  now,
 			UpdatedAt:  now,
 		}
@@ -335,7 +349,7 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 				Status:     coreauth.StatusActive,
 				ProxyURL:   proxyURL,
 				Attributes: attrs,
-				Metadata:   buildBackoffMetadata(compat.BackoffMode, compat.RequestRetry, compat.ErrorControl),
+				Metadata:   buildBackoffMetadata(compat.BackoffMode, compat.RequestRetry, compat.ErrorControl, compat.Cooldown),
 				CreatedAt:  now,
 				UpdatedAt:  now,
 			}
@@ -364,7 +378,7 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 				Prefix:     prefix,
 				Status:     coreauth.StatusActive,
 				Attributes: attrs,
-				Metadata:   buildBackoffMetadata(compat.BackoffMode, compat.RequestRetry, compat.ErrorControl),
+				Metadata:   buildBackoffMetadata(compat.BackoffMode, compat.RequestRetry, compat.ErrorControl, compat.Cooldown),
 				CreatedAt:  now,
 				UpdatedAt:  now,
 			}
@@ -412,7 +426,7 @@ func (s *ConfigSynthesizer) synthesizeVertexCompat(ctx *SynthesisContext) []*cor
 			Status:     coreauth.StatusActive,
 			ProxyURL:   proxyURL,
 			Attributes: attrs,
-			Metadata:   buildBackoffMetadata(compat.BackoffMode, compat.RequestRetry, compat.ErrorControl),
+			Metadata:   buildBackoffMetadata(compat.BackoffMode, compat.RequestRetry, compat.ErrorControl, compat.Cooldown),
 			CreatedAt:  now,
 			UpdatedAt:  now,
 		}

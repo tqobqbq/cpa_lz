@@ -16,7 +16,7 @@ import { useUnsavedChangesGuard } from '@/hooks/useUnsavedChangesGuard';
 import { SecondaryScreenShell } from '@/components/common/SecondaryScreenShell';
 import { apiCallApi, getApiCallErrorMessage, modelsApi, providersApi } from '@/services/api';
 import { useAuthStore, useConfigStore, useNotificationStore } from '@/stores';
-import type { ProviderKeyConfig } from '@/types';
+import type { ProviderCooldownConfig, ProviderKeyConfig } from '@/types';
 import {
   buildHeaderObject,
   hasHeader,
@@ -28,6 +28,7 @@ import {
   areModelEntriesEqual,
   areStringArraysEqual,
 } from '@/utils/compare';
+import { areProviderCooldownConfigsEqual, normalizeProviderCooldown } from '@/utils/providerCooldown';
 import { entriesToModels, modelsToEntries } from '@/components/ui/modelInputListUtils';
 import {
   buildApiCallCommandPreview,
@@ -54,7 +55,7 @@ import {
   isAiProviderEditModalState,
   requestAiProviderEditModalClose,
 } from '@/utils/aiProviderEditModal';
-import type { ProviderFormState } from '@/components/providers';
+import { ProviderCooldownFields, type ProviderFormState } from '@/components/providers';
 import type { ModelInfo } from '@/utils/models';
 import layoutStyles from './AiProvidersEditLayout.module.scss';
 import styles from './AiProvidersPage.module.scss';
@@ -66,6 +67,7 @@ const buildEmptyForm = (): ProviderFormState => ({
   priority: 10,
   backoffMode: 'default',
   requestRetry: 2,
+  cooldown: undefined,
   prefix: '',
   baseUrl: '',
   useV1: true,
@@ -109,6 +111,7 @@ type CodexFormBaseline = {
   priority: number | null;
   backoffMode: 'default' | 'off' | 'custom';
   requestRetry: number | null;
+  cooldown?: ProviderCooldownConfig;
   prefix: string;
   baseUrl: string;
   useV1: boolean;
@@ -130,6 +133,7 @@ const buildCodexBaseline = (form: ProviderFormState): CodexFormBaseline => ({
     form.requestRetry !== undefined && Number.isFinite(form.requestRetry)
       ? Math.trunc(form.requestRetry)
       : null,
+  cooldown: normalizeProviderCooldown(form.cooldown),
   prefix: String(form.prefix ?? '').trim(),
   baseUrl: String(form.baseUrl ?? '').trim(),
   useV1: form.useV1 !== false,
@@ -305,6 +309,10 @@ export function AiProvidersCodexEditPage() {
       ? Math.trunc(form.requestRetry)
       : null;
   }, [form.requestRetry]);
+  const normalizedCooldown = useMemo(
+    () => normalizeProviderCooldown(form.cooldown),
+    [form.cooldown]
+  );
   const isHeadersDirty = useMemo(
     () => !areKeyValueEntriesEqual(baseline.headers, normalizedHeaders),
     [baseline.headers, normalizedHeaders]
@@ -322,6 +330,7 @@ export function AiProvidersCodexEditPage() {
     baseline.priority !== normalizedPriority ||
     baseline.backoffMode !== normalizedBackoffMode ||
     baseline.requestRetry !== normalizedRequestRetry ||
+    !areProviderCooldownConfigsEqual(baseline.cooldown, normalizedCooldown) ||
     baseline.prefix !== String(form.prefix ?? '').trim() ||
     baseline.baseUrl !== String(form.baseUrl ?? '').trim() ||
     baseline.useV1 !== (form.useV1 !== false) ||
@@ -584,6 +593,7 @@ export function AiProvidersCodexEditPage() {
         backoffMode: normalizedBackoffMode,
         requestRetry:
           normalizedBackoffMode === 'custom' ? normalizeRequestRetry(form.requestRetry) : undefined,
+        cooldown: normalizedCooldown,
         prefix: form.prefix?.trim() || undefined,
         baseUrl,
         useV1: form.useV1 !== false,
@@ -627,6 +637,7 @@ export function AiProvidersCodexEditPage() {
     form,
     handleBack,
     normalizedBackoffMode,
+    normalizedCooldown,
     showNotification,
     t,
     updateConfigValue,
@@ -929,6 +940,11 @@ export function AiProvidersCodexEditPage() {
                 disabled={disableControls || saving || isTesting}
               />
             )}
+            <ProviderCooldownFields
+              value={form.cooldown}
+              onChange={(cooldown) => setForm((prev) => ({ ...prev, cooldown }))}
+              disabled={disableControls || saving || isTesting}
+            />
             <Input
               label={t('ai_providers.prefix_label')}
               placeholder={t('ai_providers.prefix_placeholder')}

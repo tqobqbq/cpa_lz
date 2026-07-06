@@ -27,6 +27,9 @@ static/*
 auths/*
 !auths/.gitkeep
 
+# test
+**test.go
+
 # Documentation
 docs/*
 AGENTS.md
@@ -56,3 +59,4 @@ _bmad-output/*
 
 # Local scratch files
 a.txt
+oauth.txt

@@ -7,6 +7,7 @@ import { HeaderInputList } from '@/components/ui/HeaderInputList';
 import { Input } from '@/components/ui/Input';
 import { ModelInputList } from '@/components/ui/ModelInputList';
 import { Select } from '@/components/ui/Select';
+import { ProviderCooldownFields } from '@/components/providers';
 import { SecondaryScreenShell } from '@/components/common/SecondaryScreenShell';
 import { useEdgeSwipeBack } from '@/hooks/useEdgeSwipeBack';
 import { useNotificationStore } from '@/stores';
@@ -610,6 +611,11 @@ export function AiProvidersOpenAIEditPage() {
                 disabled={saving || disableControls || isTestingKeys}
               />
             )}
+            <ProviderCooldownFields
+              value={form.cooldown}
+              onChange={(cooldown) => setForm((prev) => ({ ...prev, cooldown }))}
+              disabled={saving || disableControls || isTestingKeys}
+            />
             <Input
               label={t('ai_providers.prefix_label')}
               placeholder={t('ai_providers.prefix_placeholder')}

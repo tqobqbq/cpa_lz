@@ -100,7 +100,6 @@ max-retry-interval: 30
 # Error control retries upstream failures before returning a sanitized error downstream.
 error-control:
   default:
-    provider-retries: 1 # Attempts on the selected auth/provider before failover.
     retry-rounds: 1     # Full candidate-set rounds before final failure.
     # Exponential backoff between outer retry rounds (seconds).
     # Formula: wait = min(round-backoff-base * round-backoff-exponent^(round-1), round-backoff-max)
@@ -109,7 +108,6 @@ error-control:
     round-backoff-max: 60.0      # Maximum backoff duration (seconds), default 60.
   providers:
     claude:
-      provider-retries: 2
       retry-rounds: 1
 
 # Default provider test models used by the management center when no custom test model is selected.
@@ -132,7 +130,10 @@ quota-exceeded:
 
 # Routing strategy for selecting credentials when multiple match.
 routing:
-  strategy: "round-robin" # round-robin (default), fill-first
+  strategy: "random" # random (default), last-success
+  parallel-requests-enabled: false
+  parallel-requests-min-round: 1
+  parallel-requests-min-failures: 1
   # Prefer a provider first when downstream request metadata matches these rules.
   # The request still falls back to the normal mixed-provider scheduler if the preferred provider has no ready auth.
   # user-agent and input-chars are optional; if omitted, the rule matches all requests for that provider.

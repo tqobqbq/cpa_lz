@@ -37,6 +37,7 @@ const SECTION_KEYS: RawConfigSection[] = [
   'debug',
   'proxy-url',
   'request-retry',
+  'provider-cooldown',
   'quota-exceeded',
   'usage-statistics-enabled',
   'request-log',
@@ -68,6 +69,8 @@ const extractSectionValue = (config: Config | null, section?: RawConfigSection) 
       return config.proxyUrl;
     case 'request-retry':
       return config.requestRetry;
+    case 'provider-cooldown':
+      return config.providerCooldown;
     case 'quota-exceeded':
       return config.quotaExceeded;
     case 'usage-statistics-enabled':
@@ -210,6 +213,9 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
           break;
         case 'request-retry':
           nextConfig.requestRetry = value as Config['requestRetry'];
+          break;
+        case 'provider-cooldown':
+          nextConfig.providerCooldown = value as Config['providerCooldown'];
           break;
         case 'quota-exceeded':
           nextConfig.quotaExceeded = value as Config['quotaExceeded'];

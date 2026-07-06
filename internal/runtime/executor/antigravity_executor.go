@@ -1115,6 +1115,7 @@ attemptLoop:
 					if payload == nil {
 						continue
 					}
+					reporter.SetUpstreamModelFromPayload(payload)
 
 					if detail, ok := helps.ParseAntigravityStreamUsage(payload); ok {
 						reporter.Publish(ctx, detail)
@@ -1584,6 +1585,7 @@ attemptLoop:
 					if payload == nil {
 						continue
 					}
+					reporter.SetUpstreamModelFromPayload(payload)
 
 					if detail, ok := helps.ParseAntigravityStreamUsage(payload); ok {
 						reporter.Publish(ctx, detail)

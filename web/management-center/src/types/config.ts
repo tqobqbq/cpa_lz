@@ -3,7 +3,7 @@
  * 与基线 /config 返回结构保持一致（内部使用驼峰形式）
  */
 
-import type { GeminiKeyConfig, ProviderKeyConfig, OpenAIProviderConfig } from './provider';
+import type { GeminiKeyConfig, ProviderKeyConfig, OpenAIProviderConfig, ProviderCooldownConfig } from './provider';
 import type { AmpcodeConfig } from './ampcode';
 
 export interface AuthFilesGroupConfig {
@@ -43,6 +43,7 @@ export interface Config {
   debug?: boolean;
   proxyUrl?: string;
   requestRetry?: number;
+  providerCooldown?: ProviderCooldownConfig;
   quotaExceeded?: QuotaExceededConfig;
   usageStatisticsEnabled?: boolean;
   requestLog?: boolean;
@@ -70,6 +71,7 @@ export type RawConfigSection =
   | 'debug'
   | 'proxy-url'
   | 'request-retry'
+  | 'provider-cooldown'
   | 'quota-exceeded'
   | 'usage-statistics-enabled'
   | 'request-log'

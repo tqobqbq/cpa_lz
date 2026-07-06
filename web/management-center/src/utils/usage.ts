@@ -101,13 +101,19 @@ export interface UsageDetail {
   timestamp: string;
   source: string;
   auth_index: string | number | null;
-  remote_ip?: string;
+  upstream_model?: string;
   user_agent?: string;
   input_chars?: number;
   latency_ms?: number;
   status_code?: number;
   error_reason?: string;
   error_message?: string;
+  request_count?: number;
+  retry_round?: number;
+  round_dispatch_index?: number;
+  parallel_eligible?: boolean;
+  provider_cooldown_remaining?: number;
+  provider_cooldown_generated_raw?: number;
   tokens: {
     input_tokens: number;
     output_tokens: number;
@@ -487,14 +493,14 @@ function calculateCostFromTokenBuckets(
   return Number.isFinite(total) && total > 0 ? total : 0;
 }
 
-function buildUsageSnapshotFrom20mEntries<T>(
-  usageData: T,
-  entries: Usage20mSummaryEntry[]
-): T {
+function buildUsageSnapshotFrom20mEntries<T>(usageData: T, entries: Usage20mSummaryEntry[]): T {
   const usageRecord = isRecord(usageData) ? usageData : {};
   const totalSummary = createUsageSummary();
   const apis: Record<string, Record<string, unknown>> = {};
-  const usage20m: Record<string, Record<string, Record<string, Record<string, Usage20mBucketStats>>>> = {};
+  const usage20m: Record<
+    string,
+    Record<string, Record<string, Record<string, Usage20mBucketStats>>>
+  > = {};
 
   entries.forEach((entry) => {
     addUsageBucketToSummary(totalSummary, entry.stats);
@@ -522,16 +528,24 @@ function buildUsageSnapshotFrom20mEntries<T>(
       total_tokens: 0,
     }) as Record<string, unknown>;
 
-    modelEntry.total_requests = tokenCount(modelEntry.total_requests) + tokenCount(entry.stats.total_requests);
-    modelEntry.success_count = tokenCount(modelEntry.success_count) + tokenCount(entry.stats.success_count);
-    modelEntry.failure_count = tokenCount(modelEntry.failure_count) + tokenCount(entry.stats.failure_count);
-    modelEntry.total_tokens = tokenCount(modelEntry.total_tokens) + tokenCount(entry.stats.total_tokens);
+    modelEntry.total_requests =
+      tokenCount(modelEntry.total_requests) + tokenCount(entry.stats.total_requests);
+    modelEntry.success_count =
+      tokenCount(modelEntry.success_count) + tokenCount(entry.stats.success_count);
+    modelEntry.failure_count =
+      tokenCount(modelEntry.failure_count) + tokenCount(entry.stats.failure_count);
+    modelEntry.total_tokens =
+      tokenCount(modelEntry.total_tokens) + tokenCount(entry.stats.total_tokens);
     models[entry.model] = modelEntry;
 
-    apiEntry.total_requests = tokenCount(apiEntry.total_requests) + tokenCount(entry.stats.total_requests);
-    apiEntry.success_count = tokenCount(apiEntry.success_count) + tokenCount(entry.stats.success_count);
-    apiEntry.failure_count = tokenCount(apiEntry.failure_count) + tokenCount(entry.stats.failure_count);
-    apiEntry.total_tokens = tokenCount(apiEntry.total_tokens) + tokenCount(entry.stats.total_tokens);
+    apiEntry.total_requests =
+      tokenCount(apiEntry.total_requests) + tokenCount(entry.stats.total_requests);
+    apiEntry.success_count =
+      tokenCount(apiEntry.success_count) + tokenCount(entry.stats.success_count);
+    apiEntry.failure_count =
+      tokenCount(apiEntry.failure_count) + tokenCount(entry.stats.failure_count);
+    apiEntry.total_tokens =
+      tokenCount(apiEntry.total_tokens) + tokenCount(entry.stats.total_tokens);
     apiEntry.models = models;
     apis[endpoint] = apiEntry;
   });
@@ -1014,17 +1028,18 @@ export function collectUsageDetails(usageData: unknown): UsageDetail[] {
         details.push({
           timestamp,
           source: normalizeSource(detailRaw.source),
-          auth_index:
-            (detailRaw?.auth_index ??
-              detailRaw?.authIndex ??
-              detailRaw?.AuthIndex ??
-              null) as UsageDetail['auth_index'],
-          remote_ip:
-            typeof detailRaw.remote_ip === 'string'
-              ? detailRaw.remote_ip
-              : typeof detailRaw.remoteIP === 'string'
-                ? detailRaw.remoteIP
-                : undefined,
+          auth_index: (detailRaw?.auth_index ??
+            detailRaw?.authIndex ??
+            detailRaw?.AuthIndex ??
+            null) as UsageDetail['auth_index'],
+          upstream_model:
+            typeof detailRaw.upstream_model === 'string'
+              ? detailRaw.upstream_model
+              : typeof detailRaw.upstreamModel === 'string'
+                ? detailRaw.upstreamModel
+                : typeof detailRaw.UpstreamModel === 'string'
+                  ? detailRaw.UpstreamModel
+                  : undefined,
           user_agent:
             typeof detailRaw.user_agent === 'string'
               ? detailRaw.user_agent
@@ -1055,6 +1070,42 @@ export function collectUsageDetails(usageData: unknown): UsageDetail[] {
               ? detailRaw.error_message
               : typeof detailRaw.errorMessage === 'string'
                 ? detailRaw.errorMessage
+                : undefined,
+          request_count:
+            typeof detailRaw.request_count === 'number'
+              ? detailRaw.request_count
+              : typeof detailRaw.requestCount === 'number'
+                ? detailRaw.requestCount
+                : undefined,
+          retry_round:
+            typeof detailRaw.retry_round === 'number'
+              ? detailRaw.retry_round
+              : typeof detailRaw.retryRound === 'number'
+                ? detailRaw.retryRound
+                : undefined,
+          round_dispatch_index:
+            typeof detailRaw.round_dispatch_index === 'number'
+              ? detailRaw.round_dispatch_index
+              : typeof detailRaw.roundDispatchIndex === 'number'
+                ? detailRaw.roundDispatchIndex
+                : undefined,
+          parallel_eligible:
+            typeof detailRaw.parallel_eligible === 'boolean'
+              ? detailRaw.parallel_eligible
+              : typeof detailRaw.parallelEligible === 'boolean'
+                ? detailRaw.parallelEligible
+                : undefined,
+          provider_cooldown_remaining:
+            typeof detailRaw.provider_cooldown_remaining === 'number'
+              ? detailRaw.provider_cooldown_remaining
+              : typeof detailRaw.providerCooldownRemaining === 'number'
+                ? detailRaw.providerCooldownRemaining
+                : undefined,
+          provider_cooldown_generated_raw:
+            typeof detailRaw.provider_cooldown_generated_raw === 'number'
+              ? detailRaw.provider_cooldown_generated_raw
+              : typeof detailRaw.providerCooldownGeneratedRaw === 'number'
+                ? detailRaw.providerCooldownGeneratedRaw
                 : undefined,
           tokens: tokensRaw as unknown as UsageDetail['tokens'],
           failed: detailRaw.failed === true,
@@ -1127,17 +1178,18 @@ export function collectUsageDetailsWithEndpoint(usageData: unknown): UsageDetail
         details.push({
           timestamp,
           source: normalizeSource(detailRaw.source),
-          auth_index:
-            (detailRaw?.auth_index ??
-              detailRaw?.authIndex ??
-              detailRaw?.AuthIndex ??
-              null) as UsageDetail['auth_index'],
-          remote_ip:
-            typeof detailRaw.remote_ip === 'string'
-              ? detailRaw.remote_ip
-              : typeof detailRaw.remoteIP === 'string'
-                ? detailRaw.remoteIP
-                : undefined,
+          auth_index: (detailRaw?.auth_index ??
+            detailRaw?.authIndex ??
+            detailRaw?.AuthIndex ??
+            null) as UsageDetail['auth_index'],
+          upstream_model:
+            typeof detailRaw.upstream_model === 'string'
+              ? detailRaw.upstream_model
+              : typeof detailRaw.upstreamModel === 'string'
+                ? detailRaw.upstreamModel
+                : typeof detailRaw.UpstreamModel === 'string'
+                  ? detailRaw.UpstreamModel
+                  : undefined,
           user_agent:
             typeof detailRaw.user_agent === 'string'
               ? detailRaw.user_agent
@@ -1168,6 +1220,42 @@ export function collectUsageDetailsWithEndpoint(usageData: unknown): UsageDetail
               ? detailRaw.error_message
               : typeof detailRaw.errorMessage === 'string'
                 ? detailRaw.errorMessage
+                : undefined,
+          request_count:
+            typeof detailRaw.request_count === 'number'
+              ? detailRaw.request_count
+              : typeof detailRaw.requestCount === 'number'
+                ? detailRaw.requestCount
+                : undefined,
+          retry_round:
+            typeof detailRaw.retry_round === 'number'
+              ? detailRaw.retry_round
+              : typeof detailRaw.retryRound === 'number'
+                ? detailRaw.retryRound
+                : undefined,
+          round_dispatch_index:
+            typeof detailRaw.round_dispatch_index === 'number'
+              ? detailRaw.round_dispatch_index
+              : typeof detailRaw.roundDispatchIndex === 'number'
+                ? detailRaw.roundDispatchIndex
+                : undefined,
+          parallel_eligible:
+            typeof detailRaw.parallel_eligible === 'boolean'
+              ? detailRaw.parallel_eligible
+              : typeof detailRaw.parallelEligible === 'boolean'
+                ? detailRaw.parallelEligible
+                : undefined,
+          provider_cooldown_remaining:
+            typeof detailRaw.provider_cooldown_remaining === 'number'
+              ? detailRaw.provider_cooldown_remaining
+              : typeof detailRaw.providerCooldownRemaining === 'number'
+                ? detailRaw.providerCooldownRemaining
+                : undefined,
+          provider_cooldown_generated_raw:
+            typeof detailRaw.provider_cooldown_generated_raw === 'number'
+              ? detailRaw.provider_cooldown_generated_raw
+              : typeof detailRaw.providerCooldownGeneratedRaw === 'number'
+                ? detailRaw.providerCooldownGeneratedRaw
                 : undefined,
           tokens: tokensRaw as unknown as UsageDetail['tokens'],
           failed: detailRaw.failed === true,
@@ -1447,8 +1535,7 @@ export function getApiStats(
   const apis = getApisRecord(usageData);
   const usageRecord = isRecord(usageData) ? usageData : null;
   const shouldUseUsage20mForApiStats =
-    summaryEntries.length > 0 &&
-    (!apis || usageRecord?.__usage20mDerivedApis === true);
+    summaryEntries.length > 0 && (!apis || usageRecord?.__usage20mDerivedApis === true);
 
   if (shouldUseUsage20mForApiStats) {
     const apiMap = new Map<string, ApiStats>();
@@ -1474,22 +1561,21 @@ export function getApiStats(
           latencySampleCount: 0,
           models: {},
         } satisfies ApiStats);
-      const modelStats =
-        apiStats.models[entry.model] ?? {
-          requests: 0,
-          successCount: 0,
-          failureCount: 0,
-          tokens: 0,
-          inputTokens: 0,
-          outputTokens: 0,
-          reasoningTokens: 0,
-          cachedTokens: 0,
-          cacheCreationTokens: 0,
-          cacheReadTokens: 0,
-          averageLatencyMs: null,
-          totalLatencyMs: null,
-          latencySampleCount: 0,
-        };
+      const modelStats = apiStats.models[entry.model] ?? {
+        requests: 0,
+        successCount: 0,
+        failureCount: 0,
+        tokens: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        reasoningTokens: 0,
+        cachedTokens: 0,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 0,
+        averageLatencyMs: null,
+        totalLatencyMs: null,
+        latencySampleCount: 0,
+      };
 
       const requests = tokenCount(entry.stats.total_requests);
       const success = tokenCount(entry.stats.success_count);
@@ -1541,10 +1627,7 @@ export function getApiStats(
 
   Object.entries(apis).forEach(([endpoint, apiData]) => {
     if (!isRecord(apiData)) return;
-    const models: Record<
-      string,
-      ApiStats['models'][string]
-    > = {};
+    const models: Record<string, ApiStats['models'][string]> = {};
     let derivedSuccessCount = 0;
     let derivedFailureCount = 0;
     let totalCost = 0;
@@ -1697,22 +1780,21 @@ export function getModelStats(
     >();
 
     summaryEntries.forEach((entry) => {
-      const existing =
-        modelMap.get(entry.model) ?? {
-          requests: 0,
-          successCount: 0,
-          failureCount: 0,
-          tokens: 0,
-          cost: 0,
-          inputTokens: 0,
-          outputTokens: 0,
-          reasoningTokens: 0,
-          cachedTokens: 0,
-          cacheCreationTokens: 0,
-          cacheReadTokens: 0,
-          latencyTotalMs: 0,
-          latencySampleCount: 0,
-        };
+      const existing = modelMap.get(entry.model) ?? {
+        requests: 0,
+        successCount: 0,
+        failureCount: 0,
+        tokens: 0,
+        cost: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        reasoningTokens: 0,
+        cachedTokens: 0,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 0,
+        latencyTotalMs: 0,
+        latencySampleCount: 0,
+      };
       const buckets = usageBucketTokenBuckets(entry.stats);
       const latency = usageBucketLatencyStats(entry.stats);
       existing.requests += tokenCount(entry.stats.total_requests);
@@ -2392,11 +2474,7 @@ export function calculateStatusBarDataFromUsage20m(
     Object.entries(providerBuckets).forEach(([bucketLabel, identityBuckets]) => {
       if (!isRecord(identityBuckets)) return;
       const bucketStart = parseTimestampMs(bucketLabel);
-      if (
-        !Number.isFinite(bucketStart) ||
-        bucketStart < windowStart ||
-        bucketStart >= windowEnd
-      ) {
+      if (!Number.isFinite(bucketStart) || bucketStart < windowStart || bucketStart >= windowEnd) {
         return;
       }
       const blockIndex = Math.floor((bucketStart - windowStart) / BLOCK_DURATION_MS);
@@ -2628,7 +2706,8 @@ export function computeKeyStats(
   masker: (val: string) => string = maskApiKey
 ): KeyStats {
   const usageRecord = isRecord(usageData) ? usageData : null;
-  const sourceStatsRaw = usageRecord && isRecord(usageRecord.source_stats) ? usageRecord.source_stats : null;
+  const sourceStatsRaw =
+    usageRecord && isRecord(usageRecord.source_stats) ? usageRecord.source_stats : null;
   const authIndexStatsRaw =
     usageRecord && isRecord(usageRecord.auth_index_stats) ? usageRecord.auth_index_stats : null;
   if (sourceStatsRaw || authIndexStatsRaw) {

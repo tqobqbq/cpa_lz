@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -20,20 +19,20 @@ import (
 )
 
 type UsageReporter struct {
-	provider    string
-	model       string
-	authID      string
-	authIndex   string
-	apiKey      string
-	source      string
-	remoteIP    string
-	userAgent   string
-	inputChars  int64
-	requestedAt time.Time
-	once        sync.Once
-	detailMu    sync.RWMutex
-	detail      usage.Detail
-	statusCode  int
+	provider      string
+	model         string
+	upstreamModel string
+	authID        string
+	authIndex     string
+	apiKey        string
+	source        string
+	userAgent     string
+	inputChars    int64
+	requestedAt   time.Time
+	once          sync.Once
+	detailMu      sync.RWMutex
+	detail        usage.Detail
+	statusCode    int
 }
 
 const requestInputCharsContextKey = "request_input_chars"
@@ -54,7 +53,6 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
 		requestedAt: time.Now(),
 		apiKey:      apiKey,
 		source:      resolveUsageSource(auth, apiKey),
-		remoteIP:    RequestRemoteIPFromContext(ctx),
 		userAgent:   RequestUserAgentFromContext(ctx),
 		inputChars:  RequestInputCharsFromContext(ctx),
 	}
@@ -95,9 +93,33 @@ func (r *UsageReporter) SetDetail(detail usage.Detail) {
 	if r == nil || !usageStatisticsEnabled() {
 		return
 	}
+	detail = normalizeUsageDetail(detail)
 	r.detailMu.Lock()
-	r.detail = normalizeUsageDetail(detail)
+	r.detail = detail
+	if upstreamModel := strings.TrimSpace(detail.UpstreamModel); upstreamModel != "" {
+		r.upstreamModel = upstreamModel
+	}
 	r.detailMu.Unlock()
+}
+
+func (r *UsageReporter) SetUpstreamModel(model string) {
+	if r == nil || !usageStatisticsEnabled() {
+		return
+	}
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return
+	}
+	r.detailMu.Lock()
+	r.upstreamModel = model
+	r.detailMu.Unlock()
+}
+
+func (r *UsageReporter) SetUpstreamModelFromPayload(data []byte) {
+	if r == nil || !usageStatisticsEnabled() {
+		return
+	}
+	r.SetUpstreamModel(ExtractUpstreamModel(data))
 }
 
 func (r *UsageReporter) currentDetail() usage.Detail {
@@ -108,6 +130,16 @@ func (r *UsageReporter) currentDetail() usage.Detail {
 	detail := r.detail
 	r.detailMu.RUnlock()
 	return normalizeUsageDetail(detail)
+}
+
+func (r *UsageReporter) currentUpstreamModel() string {
+	if r == nil {
+		return ""
+	}
+	r.detailMu.RLock()
+	upstreamModel := r.upstreamModel
+	r.detailMu.RUnlock()
+	return strings.TrimSpace(upstreamModel)
 }
 
 func (r *UsageReporter) publishWithOutcome(ctx context.Context, detail usage.Detail, failed bool, failureErr error) {
@@ -140,42 +172,65 @@ func (r *UsageReporter) buildRecord(detail usage.Detail, failed bool, failureErr
 func (r *UsageReporter) buildRecordWithContext(ctx context.Context, detail usage.Detail, failed bool, failureErr error) usage.Record {
 	detail = normalizeUsageDetail(detail)
 	statusCode, errorReason, errorMessage := failureMetadataFromError(failureErr)
+	metadata := usage.MetadataFromContext(ctx)
+	parallelAborted := failed && usage.IsParallelRequestAborted(ctx)
+	if parallelAborted {
+		errorReason = "parallel_request_aborted"
+		errorMessage = usage.ErrParallelRequestAborted.Error()
+	}
 	if statusCode <= 0 {
 		statusCode = r.currentStatusCode(ctx)
 	}
-	if shouldTreatFailureAsSuccess(failed, failureErr, statusCode) {
+	if !parallelAborted && shouldTreatFailureAsSuccess(failed, failureErr, statusCode) {
 		failed = false
 	}
 	if !failed {
 		errorReason = ""
 		errorMessage = ""
 	}
+	providerCooldownGeneratedRaw := metadata.ProviderCooldownGeneratedRaw
+	if !failed {
+		providerCooldownGeneratedRaw = 0
+	}
 	if r == nil {
 		return usage.Record{
-			Detail:       detail,
-			Failed:       failed,
-			StatusCode:   statusCode,
-			ErrorReason:  errorReason,
-			ErrorMessage: errorMessage,
+			UpstreamModel:                strings.TrimSpace(detail.UpstreamModel),
+			Detail:                       detail,
+			Failed:                       failed,
+			StatusCode:                   statusCode,
+			ErrorReason:                  errorReason,
+			ErrorMessage:                 errorMessage,
+			RequestCount:                 metadata.RequestCount,
+			RetryRound:                   metadata.RetryRound,
+			RoundDispatchIndex:           metadata.RoundDispatchIndex,
+			ParallelEligible:             metadata.ParallelEligible,
+			ProviderCooldownRemaining:    metadata.ProviderCooldownRemaining,
+			ProviderCooldownGeneratedRaw: providerCooldownGeneratedRaw,
 		}
 	}
 	return usage.Record{
-		Provider:     r.provider,
-		Model:        r.model,
-		Source:       r.source,
-		APIKey:       r.apiKey,
-		AuthID:       r.authID,
-		AuthIndex:    r.authIndex,
-		RemoteIP:     r.remoteIP,
-		UserAgent:    r.userAgent,
-		InputChars:   r.inputChars,
-		RequestedAt:  r.requestedAt,
-		Latency:      r.latency(),
-		Failed:       failed,
-		StatusCode:   statusCode,
-		ErrorReason:  errorReason,
-		ErrorMessage: errorMessage,
-		Detail:       detail,
+		Provider:                     r.provider,
+		Model:                        r.model,
+		UpstreamModel:                r.currentUpstreamModel(),
+		Source:                       r.source,
+		APIKey:                       r.apiKey,
+		AuthID:                       r.authID,
+		AuthIndex:                    r.authIndex,
+		UserAgent:                    r.userAgent,
+		InputChars:                   r.inputChars,
+		RequestedAt:                  r.requestedAt,
+		Latency:                      r.latency(),
+		Failed:                       failed,
+		StatusCode:                   statusCode,
+		ErrorReason:                  errorReason,
+		ErrorMessage:                 errorMessage,
+		RequestCount:                 metadata.RequestCount,
+		RetryRound:                   metadata.RetryRound,
+		RoundDispatchIndex:           metadata.RoundDispatchIndex,
+		ParallelEligible:             metadata.ParallelEligible,
+		ProviderCooldownRemaining:    metadata.ProviderCooldownRemaining,
+		ProviderCooldownGeneratedRaw: providerCooldownGeneratedRaw,
+		Detail:                       detail,
 	}
 }
 
@@ -201,6 +256,7 @@ func (r *UsageReporter) currentStatusCode(ctx context.Context) int {
 }
 
 func normalizeUsageDetail(detail usage.Detail) usage.Detail {
+	detail.UpstreamModel = strings.TrimSpace(detail.UpstreamModel)
 	if detail.TotalTokens == 0 {
 		total := detail.InputTokens + detail.OutputTokens + detail.CacheCreationInputTokens + detail.CacheReadInputTokens
 		if total > 0 {
@@ -375,29 +431,6 @@ func RequestUserAgentFromContext(ctx context.Context) string {
 	return strings.TrimSpace(ginCtx.Request.UserAgent())
 }
 
-func RequestRemoteIPFromContext(ctx context.Context) string {
-	if ctx == nil {
-		return ""
-	}
-	ginCtx, ok := ctx.Value("gin").(*gin.Context)
-	if !ok || ginCtx == nil || ginCtx.Request == nil {
-		return ""
-	}
-	remoteAddr := strings.TrimSpace(ginCtx.Request.RemoteAddr)
-	if remoteAddr == "" {
-		return ""
-	}
-	host, _, err := net.SplitHostPort(remoteAddr)
-	if err != nil {
-		host = remoteAddr
-	}
-	ip := net.ParseIP(strings.TrimSpace(host))
-	if ip == nil {
-		return ""
-	}
-	return ip.String()
-}
-
 func RequestInputCharsFromContext(ctx context.Context) int64 {
 	if ctx == nil {
 		return 0
@@ -492,6 +525,34 @@ func resolveUsageSource(auth *cliproxyauth.Auth, ctxAPIKey string) string {
 	return ""
 }
 
+var upstreamModelJSONPaths = [...]string{
+	"response.model",
+	"response.modelVersion",
+	"response.model_version",
+	"message.model",
+	"model",
+	"modelVersion",
+	"model_version",
+}
+
+func ExtractUpstreamModel(data []byte) string {
+	payload := jsonPayload(data)
+	if len(payload) == 0 {
+		payload = bytes.TrimSpace(data)
+	}
+	if len(payload) == 0 || !gjson.ValidBytes(payload) {
+		return ""
+	}
+	root := gjson.ParseBytes(payload)
+	for _, path := range upstreamModelJSONPaths {
+		value := strings.TrimSpace(root.Get(path).String())
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 func ParseCodexUsage(data []byte) (usage.Detail, bool) {
 	if !usageStatisticsEnabled() {
 		return usage.Detail{}, false
@@ -501,9 +562,10 @@ func ParseCodexUsage(data []byte) (usage.Detail, bool) {
 		return usage.Detail{}, false
 	}
 	detail := usage.Detail{
-		InputTokens:  usageNode.Get("input_tokens").Int(),
-		OutputTokens: usageNode.Get("output_tokens").Int(),
-		TotalTokens:  usageNode.Get("total_tokens").Int(),
+		UpstreamModel: ExtractUpstreamModel(data),
+		InputTokens:   usageNode.Get("input_tokens").Int(),
+		OutputTokens:  usageNode.Get("output_tokens").Int(),
+		TotalTokens:   usageNode.Get("total_tokens").Int(),
 	}
 	if cached := usageNode.Get("input_tokens_details.cached_tokens"); cached.Exists() {
 		detail.CachedTokens = cached.Int()
@@ -531,9 +593,10 @@ func ParseOpenAIUsage(data []byte) usage.Detail {
 		outputNode = usageNode.Get("output_tokens")
 	}
 	detail := usage.Detail{
-		InputTokens:  inputNode.Int(),
-		OutputTokens: outputNode.Int(),
-		TotalTokens:  usageNode.Get("total_tokens").Int(),
+		UpstreamModel: ExtractUpstreamModel(data),
+		InputTokens:   inputNode.Int(),
+		OutputTokens:  outputNode.Int(),
+		TotalTokens:   usageNode.Get("total_tokens").Int(),
 	}
 	cached := usageNode.Get("prompt_tokens_details.cached_tokens")
 	if !cached.Exists() {
@@ -573,9 +636,10 @@ func ParseOpenAIStreamUsage(line []byte) (usage.Detail, bool) {
 		outputNode = usageNode.Get("output_tokens")
 	}
 	detail := usage.Detail{
-		InputTokens:  inputNode.Int(),
-		OutputTokens: outputNode.Int(),
-		TotalTokens:  usageNode.Get("total_tokens").Int(),
+		UpstreamModel: ExtractUpstreamModel(payload),
+		InputTokens:   inputNode.Int(),
+		OutputTokens:  outputNode.Int(),
+		TotalTokens:   usageNode.Get("total_tokens").Int(),
 	}
 	cached := usageNode.Get("prompt_tokens_details.cached_tokens")
 	if !cached.Exists() {
@@ -603,6 +667,7 @@ func ParseClaudeUsage(data []byte) usage.Detail {
 		return usage.Detail{}
 	}
 	detail := usage.Detail{
+		UpstreamModel:              ExtractUpstreamModel(data),
 		InputTokens:                usageNode.Get("input_tokens").Int(),
 		OutputTokens:               usageNode.Get("output_tokens").Int(),
 		CacheCreationInputTokens:   usageNode.Get("cache_creation_input_tokens").Int(),
@@ -631,6 +696,7 @@ func ParseClaudeStreamUsage(line []byte) (usage.Detail, bool) {
 		return usage.Detail{}, false
 	}
 	detail := usage.Detail{
+		UpstreamModel:              ExtractUpstreamModel(payload),
 		InputTokens:                usageNode.Get("input_tokens").Int(),
 		OutputTokens:               usageNode.Get("output_tokens").Int(),
 		CacheCreationInputTokens:   usageNode.Get("cache_creation_input_tokens").Int(),
@@ -672,7 +738,9 @@ func ParseGeminiCLIUsage(data []byte) usage.Detail {
 	if !node.Exists() {
 		return usage.Detail{}
 	}
-	return parseGeminiFamilyUsageDetail(node)
+	detail := parseGeminiFamilyUsageDetail(node)
+	detail.UpstreamModel = ExtractUpstreamModel(data)
+	return detail
 }
 
 func ParseGeminiUsage(data []byte) usage.Detail {
@@ -687,7 +755,9 @@ func ParseGeminiUsage(data []byte) usage.Detail {
 	if !node.Exists() {
 		return usage.Detail{}
 	}
-	return parseGeminiFamilyUsageDetail(node)
+	detail := parseGeminiFamilyUsageDetail(node)
+	detail.UpstreamModel = ExtractUpstreamModel(data)
+	return detail
 }
 
 func ParseGeminiStreamUsage(line []byte) (usage.Detail, bool) {
@@ -705,7 +775,9 @@ func ParseGeminiStreamUsage(line []byte) (usage.Detail, bool) {
 	if !node.Exists() {
 		return usage.Detail{}, false
 	}
-	return parseGeminiFamilyUsageDetail(node), true
+	detail := parseGeminiFamilyUsageDetail(node)
+	detail.UpstreamModel = ExtractUpstreamModel(payload)
+	return detail, true
 }
 
 func ParseGeminiCLIStreamUsage(line []byte) (usage.Detail, bool) {
@@ -723,7 +795,9 @@ func ParseGeminiCLIStreamUsage(line []byte) (usage.Detail, bool) {
 	if !node.Exists() {
 		return usage.Detail{}, false
 	}
-	return parseGeminiFamilyUsageDetail(node), true
+	detail := parseGeminiFamilyUsageDetail(node)
+	detail.UpstreamModel = ExtractUpstreamModel(payload)
+	return detail, true
 }
 
 func ParseAntigravityUsage(data []byte) usage.Detail {
@@ -741,7 +815,9 @@ func ParseAntigravityUsage(data []byte) usage.Detail {
 	if !node.Exists() {
 		return usage.Detail{}
 	}
-	return parseGeminiFamilyUsageDetail(node)
+	detail := parseGeminiFamilyUsageDetail(node)
+	detail.UpstreamModel = ExtractUpstreamModel(data)
+	return detail
 }
 
 func ParseAntigravityStreamUsage(line []byte) (usage.Detail, bool) {
@@ -762,7 +838,9 @@ func ParseAntigravityStreamUsage(line []byte) (usage.Detail, bool) {
 	if !node.Exists() {
 		return usage.Detail{}, false
 	}
-	return parseGeminiFamilyUsageDetail(node), true
+	detail := parseGeminiFamilyUsageDetail(node)
+	detail.UpstreamModel = ExtractUpstreamModel(payload)
+	return detail, true
 }
 
 var stopChunkWithoutUsage sync.Map

@@ -10,6 +10,7 @@ import type { ModelInfo } from '@/utils/models';
 import type { ModelEntry, ProviderFormState } from '@/components/providers/types';
 import { buildHeaderObject, headersToEntries, normalizeHeaderEntries } from '@/utils/headers';
 import { areKeyValueEntriesEqual, areModelEntriesEqual, areStringArraysEqual } from '@/utils/compare';
+import { areProviderCooldownConfigsEqual, normalizeProviderCooldown } from '@/utils/providerCooldown';
 import {
   excludedModelsToText,
   normalizeBackoffMode,
@@ -60,6 +61,7 @@ const buildEmptyForm = (): ProviderFormState => ({
   authMode: 'auto',
   proxyUrl: '',
   headers: [],
+  cooldown: undefined,
   models: [],
   excludedModels: [],
   modelEntries: [{ name: '', alias: '' }],
@@ -118,6 +120,7 @@ const buildClaudeBaseline = (form: ProviderFormState): ClaudeEditBaseline => ({
   authMode: form.authMode ?? 'auto',
   proxyUrl: String(form.proxyUrl ?? '').trim(),
   headers: normalizeHeaderEntries(form.headers),
+  cooldown: normalizeProviderCooldown(form.cooldown),
   models: normalizeClaudeModelEntries(form.modelEntries),
   excludedModels: parseExcludedModels(form.excludedText ?? ''),
   cloak: normalizeCloakConfig(form.cloak),
@@ -302,6 +305,10 @@ export function AiProvidersClaudeEditLayout() {
   const resolvedLoading = !draft?.initialized;
   const baseline = draft?.baseline ?? null;
   const normalizedHeaders = useMemo(() => normalizeHeaderEntries(form.headers), [form.headers]);
+  const normalizedCooldown = useMemo(
+    () => normalizeProviderCooldown(form.cooldown),
+    [form.cooldown]
+  );
   const normalizedModels = useMemo(
     () => normalizeClaudeModelEntries(form.modelEntries),
     [form.modelEntries]
@@ -353,6 +360,7 @@ export function AiProvidersClaudeEditLayout() {
       baseline.authMode !== (form.authMode ?? 'auto') ||
       baseline.proxyUrl !== String(form.proxyUrl ?? '').trim() ||
       isHeadersDirty ||
+      !areProviderCooldownConfigsEqual(baseline.cooldown, normalizedCooldown) ||
       isModelsDirty ||
       isExcludedModelsDirty ||
       isCloakDirty);
@@ -443,6 +451,7 @@ export function AiProvidersClaudeEditLayout() {
         authMode: form.authMode && form.authMode !== 'auto' ? form.authMode : undefined,
         proxyUrl: form.proxyUrl?.trim() || undefined,
         headers: buildHeaderObject(form.headers),
+        cooldown: normalizedCooldown,
         models: form.modelEntries
           .map((entry) => {
             const name = entry.name.trim();
@@ -488,6 +497,7 @@ export function AiProvidersClaudeEditLayout() {
     invalidIndex,
     invalidIndexParam,
     normalizedBackoffMode,
+    normalizedCooldown,
     resolvedLoading,
     setDraftBaseline,
     saving,

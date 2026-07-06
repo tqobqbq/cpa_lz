@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -277,8 +278,10 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	}()
 	data, err := io.ReadAll(decodedBody)
 	if err != nil {
-		helps.RecordAPIResponseError(ctx, e.cfg, err)
-		return resp, err
+		if !shouldValidatePartialClaudePayload(ctx, err) {
+			helps.RecordAPIResponseError(ctx, e.cfg, err)
+			return resp, normalizeClaudeReadError(err)
+		}
 	}
 	helps.AppendAPIResponseChunk(ctx, e.cfg, data)
 	if stream {
@@ -288,6 +291,7 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 				err = errValidate
 				return resp, err
 			}
+			reporter.SetUpstreamModelFromPayload(line)
 			if detail, ok := helps.ParseClaudeStreamUsage(line); ok {
 				reporter.SetDetail(detail)
 			}
@@ -501,6 +505,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 					line = reverseRemapOAuthToolNamesFromStreamLine(line)
 				}
 				semanticState.Observe(line)
+				reporter.SetUpstreamModelFromPayload(line)
 				if detail, ok := helps.ParseClaudeStreamUsage(line); ok {
 					reporter.SetDetail(detail)
 				}
@@ -516,10 +521,15 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 				emitOrBuffer(cloned)
 			}
 			if errScan := scanner.Err(); errScan != nil {
-				helps.RecordAPIResponseError(ctx, e.cfg, errScan)
-				reporter.PublishFailureWithError(ctx, errScan)
-				out <- cliproxyexecutor.StreamChunk{Err: errScan}
-				return
+				if shouldIgnoreClaudeStreamEOF(errScan, semanticState) {
+					helps.LogWithRequestID(ctx).Warn("claude upstream stream ended with unexpected EOF after message_stop; ignoring")
+				} else {
+					streamErr := normalizeClaudeReadError(errScan)
+					helps.RecordAPIResponseError(ctx, e.cfg, errScan)
+					reporter.PublishFailureWithError(ctx, streamErr)
+					out <- cliproxyexecutor.StreamChunk{Err: streamErr}
+					return
+				}
 			}
 			if errEmpty := semanticState.EmptyResponseError(e.Identifier()); errEmpty != nil {
 				reporter.PublishFailureWithError(ctx, errEmpty)
@@ -565,6 +575,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 				line = reverseRemapOAuthToolNamesFromStreamLine(line)
 			}
 			semanticState.Observe(line)
+			reporter.SetUpstreamModelFromPayload(line)
 			if detail, ok := helps.ParseClaudeStreamUsage(line); ok {
 				reporter.SetDetail(detail)
 			}
@@ -588,10 +599,15 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 			}
 		}
 		if errScan := scanner.Err(); errScan != nil {
-			helps.RecordAPIResponseError(ctx, e.cfg, errScan)
-			reporter.PublishFailureWithError(ctx, errScan)
-			out <- cliproxyexecutor.StreamChunk{Err: errScan}
-			return
+			if shouldIgnoreClaudeStreamEOF(errScan, semanticState) {
+				helps.LogWithRequestID(ctx).Warn("claude upstream stream ended with unexpected EOF after message_stop; ignoring")
+			} else {
+				streamErr := normalizeClaudeReadError(errScan)
+				helps.RecordAPIResponseError(ctx, e.cfg, errScan)
+				reporter.PublishFailureWithError(ctx, streamErr)
+				out <- cliproxyexecutor.StreamChunk{Err: streamErr}
+				return
+			}
 		}
 		if errEmpty := semanticState.EmptyResponseError(e.Identifier()); errEmpty != nil {
 			reporter.PublishFailureWithError(ctx, errEmpty)
@@ -610,6 +626,7 @@ type claudeStreamSemanticState struct {
 	usageSeen    bool
 	outputTokens int64
 	hasOutput    bool
+	stopSeen     bool
 	linesScanned int
 }
 
@@ -629,6 +646,9 @@ func (s *claudeStreamSemanticState) Observe(line []byte) {
 			s.outputTokens = outputTokens.Int()
 		}
 	}
+	if strings.TrimSpace(root.Get("type").String()) == "message_stop" {
+		s.stopSeen = true
+	}
 	if claudeStreamHasSemanticOutput(root) {
 		s.hasOutput = true
 	}
@@ -636,6 +656,10 @@ func (s *claudeStreamSemanticState) Observe(line []byte) {
 
 func (s claudeStreamSemanticState) HasOutput() bool {
 	return s.hasOutput || s.outputTokens > 0
+}
+
+func (s claudeStreamSemanticState) HasTerminalStop() bool {
+	return s.stopSeen
 }
 
 func (s claudeStreamSemanticState) EmptyResponseError(provider string) error {
@@ -654,6 +678,35 @@ func (s claudeStreamSemanticState) EmptyResponseError(provider string) error {
 		message = fmt.Sprintf("%s upstream returned an empty response", provider)
 	}
 	return helps.NewResponseFormatError(http.StatusOK, "upstream_empty_response", message)
+}
+
+func isUnexpectedEOF(err error) bool {
+	if err == nil {
+		return false
+	}
+	return errors.Is(err, io.ErrUnexpectedEOF) || strings.Contains(strings.ToLower(err.Error()), "unexpected eof")
+}
+
+func shouldValidatePartialClaudePayload(ctx context.Context, err error) bool {
+	if !isUnexpectedEOF(err) {
+		return false
+	}
+	helps.LogWithRequestID(ctx).Warn("claude upstream response ended with unexpected EOF; validating partial payload")
+	return true
+}
+
+func shouldIgnoreClaudeStreamEOF(err error, state claudeStreamSemanticState) bool {
+	if !isUnexpectedEOF(err) {
+		return false
+	}
+	return state.HasTerminalStop()
+}
+
+func normalizeClaudeReadError(err error) error {
+	if !isUnexpectedEOF(err) {
+		return err
+	}
+	return helps.NewResponseFormatError(http.StatusOK, "upstream_truncated_response", "claude upstream response ended unexpectedly")
 }
 
 func claudeStreamDataPayload(line []byte) []byte {
@@ -832,12 +885,17 @@ func (e *ClaudeExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Aut
 	}()
 	data, err := io.ReadAll(decodedBody)
 	if err != nil {
-		helps.RecordAPIResponseError(ctx, e.cfg, err)
-		return cliproxyexecutor.Response{}, err
+		if !shouldValidatePartialClaudePayload(ctx, err) {
+			helps.RecordAPIResponseError(ctx, e.cfg, err)
+			return cliproxyexecutor.Response{}, normalizeClaudeReadError(err)
+		}
 	}
 	helps.AppendAPIResponseChunk(ctx, e.cfg, data)
 	count := gjson.GetBytes(data, "input_tokens").Int()
 	out := sdktranslator.TranslateTokenCount(ctx, to, from, count, data)
+	if _, errValidate := helps.ValidateDownstreamNonStreamPayloadWithOutputFilter(from, e.Identifier(), out, helps.OutputFilterFromConfig(e.cfg)); errValidate != nil {
+		return cliproxyexecutor.Response{}, errValidate
+	}
 	return cliproxyexecutor.Response{Payload: out, Headers: resp.Header.Clone()}, nil
 }
 

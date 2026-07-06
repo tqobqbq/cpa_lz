@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	. "github.com/router-for-me/CLIProxyAPI/v6/internal/constant"
@@ -170,6 +171,236 @@ func responsesSSEDataLinesValid(chunk []byte) bool {
 		}
 	}
 	return true
+}
+
+func responsesSSEHasRealOutput(chunk []byte) bool {
+	trimmed := bytes.TrimSpace(chunk)
+	if len(trimmed) == 0 {
+		return false
+	}
+	dataPayloads := responsesSSEDataPayloads(trimmed)
+	if len(dataPayloads) == 0 {
+		return false
+	}
+	for _, data := range dataPayloads {
+		if responsesSSEDataHasRealOutput(data) {
+			return true
+		}
+	}
+	return false
+}
+
+func responsesSSEDataHasRealOutput(data []byte) bool {
+	if len(data) == 0 || bytes.Equal(data, []byte("[DONE]")) {
+		return false
+	}
+	if !json.Valid(data) {
+		return true
+	}
+	typeValue := strings.TrimSpace(gjson.GetBytes(data, "type").String())
+	switch typeValue {
+	case "error", "response.failed":
+		return false
+	case "response.created", "response.in_progress", "response.output_item.added":
+		return false
+	case "response.reasoning_summary_part.added", "response.content_part.added":
+		return false
+	}
+	return typeValue != ""
+}
+
+func responsesSSEDataPayloads(chunk []byte) [][]byte {
+	lines := bytes.Split(chunk, []byte("\n"))
+	payloads := make([][]byte, 0, len(lines))
+	for _, rawLine := range lines {
+		line := bytes.TrimSpace(rawLine)
+		if !bytes.HasPrefix(line, []byte("data:")) {
+			continue
+		}
+		payloads = append(payloads, bytes.TrimSpace(line[len("data:"):]))
+	}
+	return payloads
+}
+
+func responsesSSEStartErrorFromChunk(chunk []byte) (*interfaces.ErrorMessage, bool) {
+	trimmed := bytes.TrimSpace(chunk)
+	if len(trimmed) == 0 {
+		return nil, false
+	}
+	eventError := responsesSSEHasField(trimmed, []byte("event: error"))
+	for _, data := range responsesSSEDataPayloads(trimmed) {
+		if len(data) == 0 || bytes.Equal(data, []byte("[DONE]")) || !json.Valid(data) {
+			continue
+		}
+		root := gjson.ParseBytes(data)
+		eventType := strings.TrimSpace(root.Get("type").String())
+		topLevelError := root.Get("error")
+		responseError := root.Get("response.error")
+		isError := eventError ||
+			eventType == "error" ||
+			eventType == "response.failed" ||
+			(topLevelError.Exists() && topLevelError.Type != gjson.Null) ||
+			(responseError.Exists() && responseError.Type != gjson.Null)
+		if !isError {
+			continue
+		}
+		message := firstResponsesStreamErrorText(root, data)
+		if message == "" {
+			message = strings.TrimSpace(string(data))
+		}
+		status := responsesStreamErrorStatusCode(root, data, message)
+		return &interfaces.ErrorMessage{StatusCode: status, Error: fmt.Errorf("%s", message)}, true
+	}
+	return nil, false
+}
+
+func firstResponsesStreamErrorText(root gjson.Result, raw []byte) string {
+	for _, path := range []string{"error.message", "message", "response.error.message"} {
+		result := root.Get(path)
+		if !result.Exists() || result.Type == gjson.Null {
+			continue
+		}
+		if result.Type == gjson.String {
+			if text := strings.TrimSpace(result.String()); text != "" {
+				return text
+			}
+			continue
+		}
+		if text := strings.TrimSpace(result.Raw); text != "" {
+			return text
+		}
+	}
+	return strings.TrimSpace(string(raw))
+}
+
+func responsesStreamErrorStatusCode(root gjson.Result, raw []byte, message string) int {
+	for _, path := range []string{
+		"status_code",
+		"status",
+		"error.status_code",
+		"error.status",
+		"response.error.status_code",
+		"response.error.status",
+	} {
+		result := root.Get(path)
+		if !result.Exists() {
+			continue
+		}
+		if result.Type == gjson.Number {
+			if code := int(result.Int()); code >= 100 && code <= 599 {
+				return code
+			}
+		}
+		switch strings.TrimSpace(result.String()) {
+		case "400":
+			return http.StatusBadRequest
+		case "401":
+			return http.StatusUnauthorized
+		case "403":
+			return http.StatusForbidden
+		case "404":
+			return http.StatusNotFound
+		case "408":
+			return http.StatusRequestTimeout
+		case "429":
+			return http.StatusTooManyRequests
+		case "500":
+			return http.StatusInternalServerError
+		case "502":
+			return http.StatusBadGateway
+		case "503":
+			return http.StatusServiceUnavailable
+		case "504":
+			return http.StatusGatewayTimeout
+		}
+	}
+	lower := strings.ToLower(strings.Join([]string{message, string(raw)}, " "))
+	switch {
+	case strings.Contains(lower, "concurrency limit exceeded"),
+		strings.Contains(lower, "rate limit"),
+		strings.Contains(lower, "rate_limit"),
+		strings.Contains(lower, "too many requests"),
+		strings.Contains(lower, "usage_limit"),
+		strings.Contains(lower, "quota"):
+		return http.StatusTooManyRequests
+	case strings.Contains(lower, "invalid_api_key"),
+		strings.Contains(lower, "unauthorized"):
+		return http.StatusUnauthorized
+	case strings.Contains(lower, "forbidden"),
+		strings.Contains(lower, "permission"):
+		return http.StatusForbidden
+	case strings.Contains(lower, "not found"):
+		return http.StatusNotFound
+	case strings.Contains(lower, "timeout"),
+		strings.Contains(lower, "timed out"):
+		return http.StatusRequestTimeout
+	default:
+		return http.StatusInternalServerError
+	}
+}
+
+func responsesSSEErrorStatus(errMsg *interfaces.ErrorMessage) int {
+	status := http.StatusInternalServerError
+	if errMsg != nil && errMsg.StatusCode > 0 {
+		status = errMsg.StatusCode
+	}
+	return status
+}
+
+func responseStartErrorMessage(status int) string {
+	switch status {
+	case http.StatusUnauthorized:
+		return "authentication failed before the response started"
+	case http.StatusForbidden:
+		return "access denied before the response started"
+	case http.StatusTooManyRequests:
+		return "upstream unavailable before the response started"
+	case http.StatusRequestTimeout:
+		return "request timed out before the response started"
+	default:
+		if status >= http.StatusInternalServerError {
+			return "upstream unavailable before the response started"
+		}
+		return http.StatusText(status)
+	}
+}
+
+func (h *OpenAIResponsesAPIHandler) writeResponseStartError(c *gin.Context, errMsg *interfaces.ErrorMessage) {
+	if isResponseStreamStartError(errMsg) {
+		status := responsesSSEErrorStatus(errMsg)
+		h.WriteErrorResponse(c, &interfaces.ErrorMessage{
+			StatusCode: status,
+			Error:      fmt.Errorf("%s", responseStartErrorMessage(status)),
+		})
+		return
+	}
+	h.WriteErrorResponse(c, errMsg)
+}
+
+func isResponseStreamStartError(errMsg *interfaces.ErrorMessage) bool {
+	if errMsg == nil || errMsg.Error == nil {
+		return false
+	}
+	if errMsg.StatusCode == 0 {
+		return false
+	}
+	msg := strings.ToLower(errMsg.Error.Error())
+	switch {
+	case strings.Contains(msg, "stream disconnected before completion"):
+		return true
+	case strings.Contains(msg, "upstream stream error"):
+		return true
+	case strings.Contains(msg, "concurrency limit exceeded"):
+		return true
+	case strings.Contains(msg, "rate limit"):
+		return true
+	case strings.Contains(msg, "too many requests"):
+		return true
+	case strings.Contains(msg, "quota"):
+		return true
+	default:
+		return errMsg.StatusCode == http.StatusTooManyRequests || errMsg.StatusCode >= http.StatusInternalServerError
+	}
 }
 
 func responsesSSENeedsLineBreak(pending, chunk []byte) bool {
@@ -355,11 +586,7 @@ func (h *OpenAIResponsesAPIHandler) handleStreamingResponse(c *gin.Context, rawJ
 		return
 	}
 
-	// New core execution path
 	modelName := gjson.GetBytes(rawJSON, "model").String()
-	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
-	dataChan, upstreamHeaders, errChan := h.ExecuteStreamWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, "")
-
 	setSSEHeaders := func() {
 		c.Header("Content-Type", "text/event-stream")
 		c.Header("Cache-Control", "no-cache")
@@ -367,12 +594,49 @@ func (h *OpenAIResponsesAPIHandler) handleStreamingResponse(c *gin.Context, rawJ
 		c.Header("Access-Control-Allow-Origin", "*")
 	}
 	framer := &responsesSSEFramer{}
+	startRetries := handlers.StreamingBootstrapRetries(h.Cfg)
+	if startRetries <= 0 {
+		startRetries = 1
+	}
+	attempts := 0
+	var (
+		cliCtx          context.Context
+		cliCancel       handlers.APIHandlerCancelFunc
+		dataChan        <-chan []byte
+		upstreamHeaders http.Header
+		errChan         <-chan *interfaces.ErrorMessage
+		buffered        [][]byte
+	)
+	startAttempt := func() {
+		cliCtx, cliCancel = h.GetContextWithCancel(h, c, context.Background())
+		dataChan, upstreamHeaders, errChan = h.ExecuteStreamWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, "")
+		buffered = buffered[:0]
+	}
+	retryStart := func(err error) bool {
+		if attempts >= startRetries {
+			return false
+		}
+		attempts++
+		if cliCancel != nil {
+			cliCancel(err)
+		}
+		startAttempt()
+		return true
+	}
+	flushBuffered := func() {
+		for _, chunk := range buffered {
+			framer.WriteChunk(c.Writer, chunk)
+		}
+		buffered = nil
+	}
+	startAttempt()
 
-	// Peek at the first chunk
 	for {
 		select {
 		case <-c.Request.Context().Done():
-			cliCancel(c.Request.Context().Err())
+			if cliCancel != nil {
+				cliCancel(c.Request.Context().Err())
+			}
 			return
 		case errMsg, ok := <-errChan:
 			if !ok {
@@ -380,8 +644,11 @@ func (h *OpenAIResponsesAPIHandler) handleStreamingResponse(c *gin.Context, rawJ
 				errChan = nil
 				continue
 			}
-			// Upstream failed immediately. Return proper error status and JSON.
-			h.WriteErrorResponse(c, errMsg)
+			// Upstream failed before a real Responses output frame reached the client.
+			if isResponseStreamStartError(errMsg) && retryStart(errMsg.Error) {
+				continue
+			}
+			h.writeResponseStartError(c, errMsg)
 			if errMsg != nil {
 				cliCancel(errMsg.Error)
 			} else {
@@ -390,24 +657,37 @@ func (h *OpenAIResponsesAPIHandler) handleStreamingResponse(c *gin.Context, rawJ
 			return
 		case chunk, ok := <-dataChan:
 			if !ok {
-				// Stream closed without data — upstream returned empty response.
-				h.WriteErrorResponse(c, &interfaces.ErrorMessage{
-					StatusCode: http.StatusBadGateway,
-					Error:      fmt.Errorf("upstream returned an empty response"),
-				})
-				cliCancel(fmt.Errorf("upstream returned an empty response"))
+				streamErr := fmt.Errorf("stream disconnected before completion: stream closed before response output")
+				if retryStart(streamErr) {
+					continue
+				}
+				errMsg := &interfaces.ErrorMessage{
+					StatusCode: http.StatusRequestTimeout,
+					Error:      streamErr,
+				}
+				h.writeResponseStartError(c, errMsg)
+				cliCancel(streamErr)
 				return
 			}
 
-			// Success! Set headers.
+			if errMsg, isErr := responsesSSEStartErrorFromChunk(chunk); isErr {
+				if retryStart(errMsg.Error) {
+					continue
+				}
+				h.writeResponseStartError(c, errMsg)
+				cliCancel(errMsg.Error)
+				return
+			}
+			buffered = append(buffered, append([]byte(nil), chunk...))
+			if !responsesSSEHasRealOutput(chunk) {
+				continue
+			}
+
 			setSSEHeaders()
 			handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
-
-			// Write first chunk logic (matching forwardResponsesStream)
-			framer.WriteChunk(c.Writer, chunk)
+			flushBuffered()
 			flusher.Flush()
 
-			// Continue
 			h.forwardResponsesStream(c, flusher, func(err error) { cliCancel(err) }, dataChan, errChan, framer)
 			return
 		}

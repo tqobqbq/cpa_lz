@@ -40,7 +40,6 @@
   - 规则包含 `enabled`、`max-length`、`keywords`。
   - 匹配忽略大小写，关键字按正则处理，非法正则会跳过。
 - 新增 `error-control` 配置：
-  - `provider-retries` 控制同一 auth/provider 的本地重试次数。
   - `retry-rounds` 控制完整候选集合的重试轮次。
   - `round-backoff-base`、`round-backoff-exponent`、`round-backoff-max` 控制轮次间指数退避。
   - 支持默认策略和 provider 策略。

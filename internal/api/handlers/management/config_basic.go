@@ -315,6 +315,28 @@ func (h *Handler) PutErrorControl(c *gin.Context) {
 	h.persistLocked(c)
 }
 
+// Provider cooldown
+func (h *Handler) GetProviderCooldown(c *gin.Context) {
+	c.JSON(200, gin.H{"provider-cooldown": h.cfg.ProviderCooldown})
+}
+func (h *Handler) PutProviderCooldown(c *gin.Context) {
+	var body struct {
+		Value *config.ProviderCooldownConfig `json:"value"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || body.Value == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.cfg == nil {
+		h.cfg = &config.Config{}
+	}
+	h.cfg.ProviderCooldown = *body.Value
+	h.cfg.SanitizeProviderCooldown()
+	h.persistLocked(c)
+}
+
 // ForceModelPrefix
 func (h *Handler) GetForceModelPrefix(c *gin.Context) {
 	c.JSON(200, gin.H{"force-model-prefix": h.cfg.ForceModelPrefix})
@@ -334,10 +356,10 @@ func (h *Handler) PutCodexRemoveEmptyInputName(c *gin.Context) {
 func normalizeRoutingStrategy(strategy string) (string, bool) {
 	normalized := strings.ToLower(strings.TrimSpace(strategy))
 	switch normalized {
-	case "", "round-robin", "roundrobin", "rr":
-		return "round-robin", true
-	case "fill-first", "fillfirst", "ff":
-		return "fill-first", true
+	case "", "random":
+		return "random", true
+	case "last-success":
+		return "last-success", true
 	default:
 		return "", false
 	}

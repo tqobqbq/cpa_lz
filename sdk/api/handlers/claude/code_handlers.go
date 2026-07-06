@@ -228,101 +228,57 @@ func (h *ClaudeCodeAPIHandler) handleStreamingResponse(c *gin.Context, rawJSON [
 	dataChan, upstreamHeaders, errChan := h.ExecuteStreamWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, "")
 	setSSEHeaders := func() {
 		c.Header("Content-Type", "text/event-stream")
-		c.Header("Cache-Control", "no-cache")
+		c.Header("Cache-Control", "no-cache, no-transform")
 		c.Header("Connection", "keep-alive")
 		c.Header("Access-Control-Allow-Origin", "*")
+		c.Header("X-Accel-Buffering", "no")
 	}
 
-	// Peek at the first chunk to determine success or failure before setting headers
-	for {
-		select {
-		case <-c.Request.Context().Done():
-			cliCancel(c.Request.Context().Err())
-			return
-		case errMsg, ok := <-errChan:
-			if !ok {
-				// Err channel closed cleanly; wait for data channel.
-				errChan = nil
-				continue
-			}
-			// Upstream failed immediately. Return proper error status and JSON.
-			h.WriteErrorResponse(c, errMsg)
-			if errMsg != nil {
-				cliCancel(errMsg.Error)
-			} else {
-				cliCancel(nil)
-			}
-			return
-		case chunk, ok := <-dataChan:
-			if !ok {
-				errMsg := pendingClaudeStreamError(errChan)
-				if errMsg == nil {
-					errMsg = &interfaces.ErrorMessage{
-						StatusCode: http.StatusBadGateway,
-						Error:      fmt.Errorf("upstream returned an empty response"),
-					}
-				}
-				h.WriteErrorResponse(c, errMsg)
-				if errMsg.Error != nil {
-					cliCancel(errMsg.Error)
-				} else {
-					cliCancel(nil)
-				}
-				return
-			}
+	setSSEHeaders()
+	handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
+	c.Writer.WriteHeaderNow()
+	flusher.Flush()
 
-			// Success! Set headers now.
-			setSSEHeaders()
-			handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
-
-			// Write the first chunk
-			if len(chunk) > 0 {
-				_, _ = c.Writer.Write(chunk)
-				flusher.Flush()
-			}
-
-			// Continue streaming the rest
-			h.forwardClaudeStream(c, flusher, func(err error) { cliCancel(err) }, dataChan, errChan)
-			return
-		}
-	}
-}
-
-func pendingClaudeStreamError(errChan <-chan *interfaces.ErrorMessage) *interfaces.ErrorMessage {
-	if errChan == nil {
-		return nil
-	}
-	select {
-	case errMsg, ok := <-errChan:
-		if !ok {
-			return nil
-		}
-		return errMsg
-	default:
-		return nil
-	}
+	h.forwardClaudeStream(c, flusher, func(err error) { cliCancel(err) }, dataChan, errChan)
 }
 
 func (h *ClaudeCodeAPIHandler) forwardClaudeStream(c *gin.Context, flusher http.Flusher, cancel func(error), data <-chan []byte, errs <-chan *interfaces.ErrorMessage) {
+	wroteChunk := false
+	writeStreamError := func(errMsg *interfaces.ErrorMessage) {
+		if errMsg == nil {
+			return
+		}
+		status := http.StatusInternalServerError
+		if errMsg.StatusCode > 0 {
+			status = errMsg.StatusCode
+		}
+		if !c.Writer.Written() {
+			c.Status(status)
+		}
+
+		errorBytes, _ := json.Marshal(h.toClaudeError(errMsg))
+		_, _ = fmt.Fprintf(c.Writer, "event: error\ndata: %s\n\n", errorBytes)
+	}
+
 	h.ForwardStream(c, flusher, cancel, data, errs, handlers.StreamForwardOptions{
 		WriteChunk: func(chunk []byte) {
 			if len(chunk) == 0 {
 				return
 			}
+			wroteChunk = true
 			_, _ = c.Writer.Write(chunk)
 		},
-		WriteTerminalError: func(errMsg *interfaces.ErrorMessage) {
-			if errMsg == nil {
+		WriteDone: func() {
+			if wroteChunk {
 				return
 			}
-			status := http.StatusInternalServerError
-			if errMsg.StatusCode > 0 {
-				status = errMsg.StatusCode
-			}
-			c.Status(status)
-
-			errorBytes, _ := json.Marshal(h.toClaudeError(errMsg))
-			_, _ = fmt.Fprintf(c.Writer, "event: error\ndata: %s\n\n", errorBytes)
+			writeStreamError(&interfaces.ErrorMessage{
+				StatusCode: http.StatusBadGateway,
+				Error:      fmt.Errorf("upstream returned an empty response"),
+			})
+		},
+		WriteTerminalError: func(errMsg *interfaces.ErrorMessage) {
+			writeStreamError(errMsg)
 		},
 	})
 }

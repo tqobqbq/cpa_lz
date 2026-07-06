@@ -1,4 +1,4 @@
-import type { ApiKeyEntry, GeminiKeyConfig, ProviderKeyConfig } from '@/types';
+import type { ApiKeyEntry, GeminiKeyConfig, ProviderCooldownConfig, ProviderKeyConfig } from '@/types';
 import type { HeaderEntry } from '@/utils/headers';
 import type { KeyStats, UsageDetail } from '@/utils/usage';
 
@@ -12,6 +12,7 @@ export interface OpenAIFormState {
   priority?: number;
   backoffMode?: 'default' | 'off' | 'custom';
   requestRetry?: number;
+  cooldown?: ProviderCooldownConfig;
   prefix: string;
   baseUrl: string;
   headers: HeaderEntry[];

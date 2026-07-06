@@ -24,25 +24,22 @@ export function HeaderInputList({
   removeButtonTitle = 'Remove',
   removeButtonAriaLabel = 'Remove',
 }: HeaderInputListProps) {
-  const currentEntries = entries.length ? entries : [{ key: '', value: '' }];
-
   const updateEntry = (index: number, field: 'key' | 'value', value: string) => {
-    const next = currentEntries.map((entry, idx) => (idx === index ? { ...entry, [field]: value } : entry));
+    const next = entries.map((entry, idx) => (idx === index ? { ...entry, [field]: value } : entry));
     onChange(next);
   };
 
   const addEntry = () => {
-    onChange([...currentEntries, { key: '', value: '' }]);
+    onChange([...entries, { key: '', value: '' }]);
   };
 
   const removeEntry = (index: number) => {
-    const next = currentEntries.filter((_, idx) => idx !== index);
-    onChange(next.length ? next : [{ key: '', value: '' }]);
+    onChange(entries.filter((_, idx) => idx !== index));
   };
 
   return (
     <div className="header-input-list">
-      {currentEntries.map((entry, index) => (
+      {entries.map((entry, index) => (
         <Fragment key={index}>
           <div className="header-input-row">
             <input
@@ -64,7 +61,7 @@ export function HeaderInputList({
               variant="ghost"
               size="sm"
               onClick={() => removeEntry(index)}
-              disabled={disabled || currentEntries.length <= 1}
+              disabled={disabled}
               title={removeButtonTitle}
               aria-label={removeButtonAriaLabel}
             >

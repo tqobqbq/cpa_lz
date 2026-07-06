@@ -15,9 +15,10 @@ import { useUnsavedChangesGuard } from '@/hooks/useUnsavedChangesGuard';
 import { SecondaryScreenShell } from '@/components/common/SecondaryScreenShell';
 import { modelsApi, providersApi } from '@/services/api';
 import { useAuthStore, useConfigStore, useNotificationStore } from '@/stores';
-import type { GeminiKeyConfig } from '@/types';
+import type { GeminiKeyConfig, ProviderCooldownConfig } from '@/types';
 import { buildHeaderObject, headersToEntries, normalizeHeaderEntries } from '@/utils/headers';
 import { areKeyValueEntriesEqual, areModelEntriesEqual, areStringArraysEqual } from '@/utils/compare';
+import { areProviderCooldownConfigsEqual, normalizeProviderCooldown } from '@/utils/providerCooldown';
 import type { ModelInfo } from '@/utils/models';
 import { entriesToModels, modelsToEntries } from '@/components/ui/modelInputListUtils';
 import {
@@ -33,7 +34,7 @@ import {
   normalizeRequestRetry,
   parseExcludedModels,
 } from '@/components/providers/utils';
-import type { GeminiFormState } from '@/components/providers';
+import { ProviderCooldownFields, type GeminiFormState } from '@/components/providers';
 import layoutStyles from './AiProvidersEditLayout.module.scss';
 import styles from './AiProvidersPage.module.scss';
 
@@ -44,6 +45,7 @@ const buildEmptyForm = (): GeminiFormState => ({
   priority: 10,
   backoffMode: 'default',
   requestRetry: 2,
+  cooldown: undefined,
   prefix: '',
   baseUrl: '',
   proxyUrl: '',
@@ -82,6 +84,7 @@ type GeminiFormBaseline = {
   priority: number | null;
   backoffMode: 'default' | 'off' | 'custom';
   requestRetry: number | null;
+  cooldown?: ProviderCooldownConfig;
   prefix: string;
   baseUrl: string;
   proxyUrl: string;
@@ -99,6 +102,7 @@ const buildGeminiBaseline = (form: GeminiFormState): GeminiFormBaseline => ({
     form.requestRetry !== undefined && Number.isFinite(form.requestRetry)
       ? Math.trunc(form.requestRetry)
       : null,
+  cooldown: normalizeProviderCooldown(form.cooldown),
   prefix: String(form.prefix ?? '').trim(),
   baseUrl: String(form.baseUrl ?? '').trim(),
   proxyUrl: String(form.proxyUrl ?? '').trim(),
@@ -448,6 +452,10 @@ export function AiProvidersGeminiEditPage() {
       ? Math.trunc(form.requestRetry)
       : null;
   }, [form.requestRetry]);
+  const normalizedCooldown = useMemo(
+    () => normalizeProviderCooldown(form.cooldown),
+    [form.cooldown]
+  );
   const isHeadersDirty = useMemo(
     () => !areKeyValueEntriesEqual(baseline.headers, normalizedHeaders),
     [baseline.headers, normalizedHeaders]
@@ -465,6 +473,7 @@ export function AiProvidersGeminiEditPage() {
     baseline.priority !== normalizedPriority ||
     baseline.backoffMode !== normalizedBackoffMode ||
     baseline.requestRetry !== normalizedRequestRetry ||
+    !areProviderCooldownConfigsEqual(baseline.cooldown, normalizedCooldown) ||
     baseline.prefix !== String(form.prefix ?? '').trim() ||
     baseline.baseUrl !== String(form.baseUrl ?? '').trim() ||
     baseline.proxyUrl !== String(form.proxyUrl ?? '').trim() ||
@@ -503,6 +512,7 @@ export function AiProvidersGeminiEditPage() {
         backoffMode: normalizedBackoffMode,
         requestRetry:
           normalizedBackoffMode === 'custom' ? normalizeRequestRetry(form.requestRetry) : undefined,
+        cooldown: normalizedCooldown,
         prefix: form.prefix?.trim() || undefined,
         baseUrl: form.baseUrl?.trim() || undefined,
         proxyUrl: form.proxyUrl?.trim() || undefined,
@@ -544,6 +554,7 @@ export function AiProvidersGeminiEditPage() {
     form,
     handleBack,
     normalizedBackoffMode,
+    normalizedCooldown,
     showNotification,
     t,
     updateConfigValue,
@@ -667,6 +678,11 @@ export function AiProvidersGeminiEditPage() {
                 disabled={disableControls || saving}
               />
             )}
+            <ProviderCooldownFields
+              value={form.cooldown}
+              onChange={(cooldown) => setForm((prev) => ({ ...prev, cooldown }))}
+              disabled={disableControls || saving}
+            />
             <Input
               label={t('ai_providers.prefix_label')}
               placeholder={t('ai_providers.prefix_placeholder')}

@@ -9,11 +9,12 @@ export type VisualConfigFieldPath =
   | 'logsMaxTotalSizeMb'
   | 'requestRetry'
   | 'maxRetryInterval'
-  | 'errorControl.default.providerRetries'
   | 'errorControl.default.retryRounds'
   | 'errorControl.default.roundBackoffBase'
   | 'errorControl.default.roundBackoffExponent'
   | 'errorControl.default.roundBackoffMax'
+  | 'routingParallelRequestsMinRound'
+  | 'routingParallelRequestsMinFailures'
   | 'streaming.keepaliveSeconds'
   | 'streaming.bootstrapRetries'
   | 'streaming.nonstreamKeepaliveInterval'
@@ -78,7 +79,6 @@ export interface OutputFilterValues extends OutputFilterRuleValues {
 }
 
 export type ErrorControlPolicyField =
-  | 'providerRetries'
   | 'retryRounds'
   | 'roundBackoffBase'
   | 'roundBackoffExponent'
@@ -125,7 +125,10 @@ export type VisualConfigValues = {
   quotaSwitchProject: boolean;
   quotaSwitchPreviewModel: boolean;
   quotaAntigravityCredits: boolean;
-  routingStrategy: 'round-robin' | 'fill-first';
+  routingStrategy: 'random' | 'last-success';
+  routingParallelRequestsEnabled: boolean;
+  routingParallelRequestsMinRound: string;
+  routingParallelRequestsMinFailures: string;
   routingSessionAffinity: boolean;
   routingSessionAffinityTTL: string;
   wsAuth: boolean;
@@ -167,7 +170,6 @@ export const DEFAULT_VISUAL_VALUES: VisualConfigValues = {
   maxRetryInterval: '',
   errorControl: {
     default: {
-      providerRetries: '',
       retryRounds: '',
       roundBackoffBase: '',
       roundBackoffExponent: '',
@@ -180,7 +182,10 @@ export const DEFAULT_VISUAL_VALUES: VisualConfigValues = {
   quotaSwitchProject: true,
   quotaSwitchPreviewModel: true,
   quotaAntigravityCredits: true,
-  routingStrategy: 'round-robin',
+  routingStrategy: 'random',
+  routingParallelRequestsEnabled: false,
+  routingParallelRequestsMinRound: '',
+  routingParallelRequestsMinFailures: '',
   routingSessionAffinity: false,
   routingSessionAffinityTTL: '',
   wsAuth: false,

@@ -6,6 +6,7 @@ package usage
 import (
 	"context"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"sync"
@@ -120,18 +121,23 @@ type modelStats struct {
 
 // RequestDetail stores the timestamp, latency, and token usage for a single request.
 type RequestDetail struct {
-	Timestamp    time.Time  `json:"timestamp"`
-	LatencyMs    int64      `json:"latency_ms"`
-	Source       string     `json:"source"`
-	AuthIndex    string     `json:"auth_index"`
-	RemoteIP     string     `json:"remote_ip,omitempty"`
-	UserAgent    string     `json:"user_agent,omitempty"`
-	InputChars   int64      `json:"input_chars,omitempty"`
-	StatusCode   int        `json:"status_code,omitempty"`
-	ErrorReason  string     `json:"error_reason,omitempty"`
-	ErrorMessage string     `json:"error_message,omitempty"`
-	Tokens       TokenStats `json:"tokens"`
-	Failed       bool       `json:"failed"`
+	Timestamp                    time.Time  `json:"timestamp"`
+	LatencyMs                    int64      `json:"latency_ms"`
+	Source                       string     `json:"source"`
+	UpstreamModel                string     `json:"upstream_model,omitempty"`
+	UserAgent                    string     `json:"user_agent,omitempty"`
+	InputChars                   int64      `json:"input_chars,omitempty"`
+	StatusCode                   int        `json:"status_code,omitempty"`
+	ErrorReason                  string     `json:"error_reason,omitempty"`
+	ErrorMessage                 string     `json:"error_message,omitempty"`
+	RequestCount                 uint64     `json:"request_count,omitempty"`
+	RetryRound                   int        `json:"retry_round,omitempty"`
+	RoundDispatchIndex           int        `json:"round_dispatch_index,omitempty"`
+	ParallelEligible             bool       `json:"parallel_eligible"`
+	ProviderCooldownRemaining    int        `json:"provider_cooldown_remaining,omitempty"`
+	ProviderCooldownGeneratedRaw float64    `json:"provider_cooldown_generated_raw,omitempty"`
+	Tokens                       TokenStats `json:"tokens"`
+	Failed                       bool       `json:"failed"`
 }
 
 // TokenStats captures the token usage breakdown for a request.
@@ -273,18 +279,23 @@ func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record)
 		stats.Models = make(map[string]*modelStats)
 	}
 	s.updateAPIStats(stats, modelName, RequestDetail{
-		Timestamp:    timestamp,
-		LatencyMs:    normaliseLatency(record.Latency),
-		Source:       record.Source,
-		AuthIndex:    record.AuthIndex,
-		RemoteIP:     record.RemoteIP,
-		UserAgent:    record.UserAgent,
-		InputChars:   normaliseInputChars(record.InputChars),
-		StatusCode:   normaliseStatusCode(record.StatusCode),
-		ErrorReason:  record.ErrorReason,
-		ErrorMessage: record.ErrorMessage,
-		Tokens:       detail,
-		Failed:       failed,
+		Timestamp:                    timestamp,
+		LatencyMs:                    normaliseLatency(record.Latency),
+		Source:                       record.Source,
+		UpstreamModel:                record.UpstreamModel,
+		UserAgent:                    record.UserAgent,
+		InputChars:                   normaliseInputChars(record.InputChars),
+		StatusCode:                   normaliseStatusCode(record.StatusCode),
+		ErrorReason:                  record.ErrorReason,
+		ErrorMessage:                 record.ErrorMessage,
+		RequestCount:                 record.RequestCount,
+		RetryRound:                   record.RetryRound,
+		RoundDispatchIndex:           record.RoundDispatchIndex,
+		ParallelEligible:             record.ParallelEligible,
+		ProviderCooldownRemaining:    record.ProviderCooldownRemaining,
+		ProviderCooldownGeneratedRaw: record.ProviderCooldownGeneratedRaw,
+		Tokens:                       detail,
+		Failed:                       failed,
 	}, timestamp)
 	if userAgent := capUsageStoredString(record.UserAgent); userAgent != "" {
 		addBoundedUsageSetValue(s.userAgents, userAgent, maxUsageUserAgents)
@@ -457,8 +468,7 @@ func (s *RequestStatistics) mergeOneUsageModelIntoOverflow(stats *apiStats) bool
 
 func normaliseRequestDetail(detail RequestDetail) RequestDetail {
 	detail.Source = capUsageStoredString(detail.Source)
-	detail.AuthIndex = capUsageStoredString(detail.AuthIndex)
-	detail.RemoteIP = capUsageStoredString(detail.RemoteIP)
+	detail.UpstreamModel = capUsageStoredString(detail.UpstreamModel)
 	detail.UserAgent = capUsageStoredString(detail.UserAgent)
 	detail.ErrorReason = capUsageStoredString(detail.ErrorReason)
 	detail.ErrorMessage = capUsageStoredString(detail.ErrorMessage)
@@ -466,6 +476,18 @@ func normaliseRequestDetail(detail RequestDetail) RequestDetail {
 	detail.StatusCode = normaliseStatusCode(detail.StatusCode)
 	if detail.LatencyMs < 0 {
 		detail.LatencyMs = 0
+	}
+	if detail.RetryRound < 0 {
+		detail.RetryRound = 0
+	}
+	if detail.RoundDispatchIndex < 0 {
+		detail.RoundDispatchIndex = 0
+	}
+	if detail.ProviderCooldownRemaining < 0 {
+		detail.ProviderCooldownRemaining = 0
+	}
+	if detail.ProviderCooldownGeneratedRaw < 0 || math.IsNaN(detail.ProviderCooldownGeneratedRaw) || math.IsInf(detail.ProviderCooldownGeneratedRaw, 0) {
+		detail.ProviderCooldownGeneratedRaw = 0
 	}
 	detail.Tokens = normaliseTokenStats(detail.Tokens)
 	return detail
@@ -1017,19 +1039,6 @@ func (s *RequestStatistics) recordImported(apiName, modelName string, stats *api
 		}
 		s.sourceStats[source] = statsValue
 	}
-	if authIndex := boundedUsageStatsKey(s.authIndexStats, detail.AuthIndex, maxUsageAuthIndexes); authIndex != "" {
-		if s.authIndexStats == nil {
-			s.authIndexStats = make(map[string]RequestOutcomeStats)
-		}
-		statsValue := s.authIndexStats[authIndex]
-		if detail.Failed {
-			statsValue.Failure++
-		} else {
-			statsValue.Success++
-		}
-		s.authIndexStats[authIndex] = statsValue
-	}
-
 	dayKey := detail.Timestamp.Format("2006-01-02")
 	hourKey := detail.Timestamp.Hour()
 
@@ -1043,18 +1052,23 @@ func dedupKey(apiName, modelName string, detail RequestDetail) string {
 	timestamp := detail.Timestamp.UTC().Format(time.RFC3339Nano)
 	tokens := normaliseTokenStats(detail.Tokens)
 	return fmt.Sprintf(
-		"%s|%s|%s|%s|%s|%s|%s|%d|%d|%s|%s|%t|%d|%d|%d|%d|%d|%d|%d|%d|%d",
+		"%s|%s|%s|%s|%s|%s|%d|%d|%s|%s|%d|%d|%d|%t|%d|%.6f|%t|%d|%d|%d|%d|%d|%d|%d|%d|%d",
 		apiName,
 		modelName,
 		timestamp,
 		detail.Source,
-		detail.AuthIndex,
-		strings.TrimSpace(detail.RemoteIP),
+		detail.UpstreamModel,
 		strings.TrimSpace(detail.UserAgent),
 		normaliseInputChars(detail.InputChars),
 		normaliseStatusCode(detail.StatusCode),
 		strings.TrimSpace(detail.ErrorReason),
 		strings.TrimSpace(detail.ErrorMessage),
+		detail.RequestCount,
+		detail.RetryRound,
+		detail.RoundDispatchIndex,
+		detail.ParallelEligible,
+		detail.ProviderCooldownRemaining,
+		detail.ProviderCooldownGeneratedRaw,
 		detail.Failed,
 		tokens.InputTokens,
 		tokens.OutputTokens,

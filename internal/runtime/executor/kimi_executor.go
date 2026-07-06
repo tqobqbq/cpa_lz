@@ -289,6 +289,7 @@ func (e *KimiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 			line := scanner.Bytes()
 			linesScanned++
 			helps.AppendAPIResponseChunk(ctx, e.cfg, line)
+			reporter.SetUpstreamModelFromPayload(line)
 			if detail, ok := helps.ParseOpenAIStreamUsage(line); ok {
 				reporter.Publish(ctx, detail)
 			}

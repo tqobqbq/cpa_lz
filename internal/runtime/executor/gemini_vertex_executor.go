@@ -658,6 +658,7 @@ func (e *GeminiVertexExecutor) executeStreamWithServiceAccount(ctx context.Conte
 			line := scanner.Bytes()
 			linesScanned++
 			helps.AppendAPIResponseChunk(ctx, e.cfg, line)
+			reporter.SetUpstreamModelFromPayload(line)
 			if detail, ok := helps.ParseGeminiStreamUsage(line); ok {
 				reporter.Publish(ctx, detail)
 			}
@@ -796,6 +797,7 @@ func (e *GeminiVertexExecutor) executeStreamWithAPIKey(ctx context.Context, auth
 			line := scanner.Bytes()
 			linesScanned++
 			helps.AppendAPIResponseChunk(ctx, e.cfg, line)
+			reporter.SetUpstreamModelFromPayload(line)
 			if detail, ok := helps.ParseGeminiStreamUsage(line); ok {
 				reporter.Publish(ctx, detail)
 			}

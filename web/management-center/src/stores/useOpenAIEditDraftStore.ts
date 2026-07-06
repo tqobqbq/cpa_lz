@@ -12,6 +12,7 @@ import type { SetStateAction } from 'react';
 import { create } from 'zustand';
 import type { OpenAIFormState } from '@/components/providers/types';
 import { buildApiKeyEntry } from '@/components/providers/utils';
+import type { ProviderCooldownConfig } from '@/types';
 
 export type OpenAITestStatus = 'idle' | 'loading' | 'success' | 'error';
 
@@ -25,6 +26,7 @@ export type OpenAIEditBaseline = {
   priority: number | null;
   backoffMode: 'default' | 'off' | 'custom';
   requestRetry: number | null;
+  cooldown?: ProviderCooldownConfig;
   prefix: string;
   baseUrl: string;
   headers: Array<{ key: string; value: string }>;
@@ -72,6 +74,7 @@ const buildEmptyForm = (): OpenAIFormState => ({
   priority: 10,
   backoffMode: 'default',
   requestRetry: 2,
+  cooldown: undefined,
   prefix: '',
   baseUrl: '',
   headers: [],
