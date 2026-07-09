@@ -18,7 +18,7 @@ import (
 	"github.com/go-git/go-git/v6/plumbing/object"
 	"github.com/go-git/go-git/v6/plumbing/transport"
 	"github.com/go-git/go-git/v6/plumbing/transport/http"
-	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
 
 // gcInterval defines minimum time between garbage collection runs.
@@ -287,12 +287,18 @@ func (s *GitTokenStore) Save(_ context.Context, auth *cliproxyauth.Auth) (string
 
 	switch {
 	case auth.Storage != nil:
-		cliproxyauth.SyncDisabledMetadata(auth)
+		if auth.Metadata == nil {
+			auth.Metadata = make(map[string]any)
+		}
+		auth.Metadata["disabled"] = auth.Disabled
+		if setter, ok := auth.Storage.(interface{ SetMetadata(map[string]any) }); ok {
+			setter.SetMetadata(auth.Metadata)
+		}
 		if err = auth.Storage.SaveTokenToFile(path); err != nil {
 			return "", err
 		}
 	case auth.Metadata != nil:
-		cliproxyauth.SyncDisabledMetadata(auth)
+		auth.Metadata["disabled"] = auth.Disabled
 		raw, errMarshal := json.Marshal(auth.Metadata)
 		if errMarshal != nil {
 			return "", fmt.Errorf("auth filestore: marshal metadata failed: %w", errMarshal)
@@ -318,7 +324,8 @@ func (s *GitTokenStore) Save(_ context.Context, auth *cliproxyauth.Auth) (string
 	if auth.Attributes == nil {
 		auth.Attributes = make(map[string]string)
 	}
-	auth.Attributes["path"] = path
+	auth.Attributes[cliproxyauth.AttributePath] = path
+	auth.Attributes[cliproxyauth.AttributeSourceBackend] = cliproxyauth.AuthSourceGit
 
 	if strings.TrimSpace(auth.FileName) == "" {
 		auth.FileName = auth.ID
@@ -474,19 +481,16 @@ func (s *GitTokenStore) readAuthFile(path, baseDir string) (*cliproxyauth.Auth, 
 		return nil, fmt.Errorf("stat file: %w", err)
 	}
 	id := s.idFor(path, baseDir)
-	disabled := cliproxyauth.DisabledFromMetadata(metadata)
-	status := cliproxyauth.StatusActive
-	if disabled {
-		status = cliproxyauth.StatusDisabled
-	}
 	auth := &cliproxyauth.Auth{
-		ID:               id,
-		Provider:         provider,
-		FileName:         id,
-		Label:            s.labelFor(metadata),
-		Status:           status,
-		Disabled:         disabled,
-		Attributes:       map[string]string{"path": path},
+		ID:       id,
+		Provider: provider,
+		FileName: id,
+		Label:    s.labelFor(metadata),
+		Status:   cliproxyauth.StatusActive,
+		Attributes: map[string]string{
+			cliproxyauth.AttributePath:          path,
+			cliproxyauth.AttributeSourceBackend: cliproxyauth.AuthSourceGit,
+		},
 		Metadata:         metadata,
 		CreatedAt:        info.ModTime(),
 		UpdatedAt:        info.ModTime(),
@@ -497,6 +501,10 @@ func (s *GitTokenStore) readAuthFile(path, baseDir string) (*cliproxyauth.Auth, 
 		auth.Attributes["email"] = email
 	}
 	cliproxyauth.ApplyCustomHeadersFromMetadata(auth)
+	if disabled, ok := metadata["disabled"].(bool); ok && disabled {
+		auth.Disabled = true
+		auth.Status = cliproxyauth.StatusDisabled
+	}
 	return auth, nil
 }
 
@@ -854,7 +862,6 @@ func (s *GitTokenStore) commitAndPushLocked(message string, relPaths ...string) 
 	} else if errRewrite := s.rewriteHeadAsSingleCommit(repo, headRef.Name(), commitHash, message, signature); errRewrite != nil {
 		return errRewrite
 	}
-	s.maybeRunGC(repo)
 	pushOpts := &git.PushOptions{Auth: s.gitAuth(), Force: true}
 	if s.branch != "" {
 		pushOpts.RefSpecs = []config.RefSpec{config.RefSpec("refs/heads/" + s.branch + ":refs/heads/" + s.branch)}
@@ -870,6 +877,7 @@ func (s *GitTokenStore) commitAndPushLocked(message string, relPaths ...string) 
 		}
 		return fmt.Errorf("git token store: push: %w", err)
 	}
+	s.maybeRunGC(repoDir)
 	return nil
 }
 
@@ -903,12 +911,17 @@ func (s *GitTokenStore) rewriteHeadAsSingleCommit(repo *git.Repository, branch p
 	return nil
 }
 
-func (s *GitTokenStore) maybeRunGC(repo *git.Repository) {
+func (s *GitTokenStore) maybeRunGC(repoDir string) {
 	now := time.Now()
 	if now.Sub(s.lastGC) < gcInterval {
 		return
 	}
 	s.lastGC = now
+
+	repo, err := git.PlainOpen(repoDir)
+	if err != nil {
+		return
+	}
 
 	pruneOpts := git.PruneOptions{
 		OnlyObjectsOlderThan: now,

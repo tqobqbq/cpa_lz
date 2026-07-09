@@ -8,9 +8,9 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/downstreamtext"
-	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/downstreamtext"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 )
 
 const (
@@ -243,7 +243,6 @@ func expectsJSONPayload(format sdktranslator.Format) bool {
 		sdktranslator.FormatOpenAIResponse,
 		sdktranslator.FormatClaude,
 		sdktranslator.FormatGemini,
-		sdktranslator.FormatGeminiCLI,
 		sdktranslator.FormatCodex,
 		sdktranslator.FormatAntigravity:
 		return true
@@ -258,7 +257,6 @@ func expectsStreamValidation(format sdktranslator.Format) bool {
 		sdktranslator.FormatOpenAIResponse,
 		sdktranslator.FormatClaude,
 		sdktranslator.FormatGemini,
-		sdktranslator.FormatGeminiCLI,
 		sdktranslator.FormatCodex,
 		sdktranslator.FormatAntigravity:
 		return true

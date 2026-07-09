@@ -3,7 +3,7 @@ package downstreamtext
 import (
 	"strings"
 
-	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 	"github.com/tidwall/gjson"
 )
 
@@ -23,7 +23,7 @@ func Extract(format sdktranslator.Format, output []byte) (string, bool) {
 		collector.collectOpenAIResponsesText(root)
 	case sdktranslator.FormatClaude:
 		collector.collectClaudeText(root)
-	case sdktranslator.FormatGemini, sdktranslator.FormatGeminiCLI, sdktranslator.FormatAntigravity:
+	case sdktranslator.FormatGemini, sdktranslator.FormatAntigravity:
 		collector.collectGeminiText(root)
 	default:
 		return "", false

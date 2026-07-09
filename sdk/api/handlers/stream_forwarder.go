@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/interfaces"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 )
 
 type StreamForwardOptions struct {
@@ -19,6 +19,10 @@ type StreamForwardOptions struct {
 	// WriteTerminalError writes an error payload to the response body when streaming fails
 	// after headers have already been committed. It should not flush.
 	WriteTerminalError func(errMsg *interfaces.ErrorMessage)
+
+	// AbortTerminalError may terminate the downstream stream without writing an error payload.
+	// Return true when the caller has handled the terminal error and ForwardStream should stop.
+	AbortTerminalError func(errMsg *interfaces.ErrorMessage) bool
 
 	// WriteDone optionally writes a terminal marker when the upstream data channel closes
 	// without an error (e.g. OpenAI's `[DONE]`). It should not flush.
@@ -80,6 +84,10 @@ func (h *BaseAPIHandler) ForwardStream(c *gin.Context, flusher http.Flusher, can
 					}
 				}
 				if terminalErr != nil {
+					if opts.AbortTerminalError != nil && opts.AbortTerminalError(terminalErr) {
+						cancel(terminalErr.Error)
+						return
+					}
 					if opts.WriteTerminalError != nil {
 						opts.WriteTerminalError(terminalErr)
 					}
@@ -102,6 +110,10 @@ func (h *BaseAPIHandler) ForwardStream(c *gin.Context, flusher http.Flusher, can
 			}
 			if errMsg != nil {
 				terminalErr = errMsg
+				if opts.AbortTerminalError != nil && opts.AbortTerminalError(errMsg) {
+					cancel(errMsg.Error)
+					return
+				}
 				if opts.WriteTerminalError != nil {
 					opts.WriteTerminalError(errMsg)
 					flusher.Flush()

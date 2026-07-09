@@ -2,64 +2,154 @@ package usage
 
 import (
 	"context"
-	"errors"
+	"net/http"
+	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	log "github.com/sirupsen/logrus"
 )
 
-type requestMetadataKey struct{}
-
-// RequestMetadata carries per-downstream-request scheduling details into usage records.
-type RequestMetadata struct {
-	RequestCount                 uint64
-	RetryRound                   int
-	RoundDispatchIndex           int
-	ParallelEligible             bool
-	ProviderCooldownRemaining    int
-	ProviderCooldownGeneratedRaw float64
-}
+// DefaultServiceTier is used when a request does not specify service_tier.
+const DefaultServiceTier = "default"
 
 // Record contains the usage statistics captured for a single provider request.
 type Record struct {
-	Provider                     string
-	Model                        string
-	UpstreamModel                string
-	APIKey                       string
-	AuthID                       string
-	AuthIndex                    string
-	Source                       string
-	UserAgent                    string
-	InputChars                   int64
-	RequestedAt                  time.Time
-	Latency                      time.Duration
-	Failed                       bool
-	StatusCode                   int
-	ErrorReason                  string
-	ErrorMessage                 string
-	RequestCount                 uint64
-	RetryRound                   int
-	RoundDispatchIndex           int
-	ParallelEligible             bool
-	ProviderCooldownRemaining    int
-	ProviderCooldownGeneratedRaw float64
-	Detail                       Detail
+	Provider string
+	// ExecutorType stores the concrete executor type that handled the request.
+	ExecutorType string
+	Model        string
+	Alias        string
+	APIKey       string
+	AuthID       string
+	AuthIndex    string
+	AuthType     string
+	Source       string
+	// ReasoningEffort stores the translated upstream thinking level for request event logs.
+	ReasoningEffort string
+	// ServiceTier stores the client-requested service tier for request event logs.
+	ServiceTier string
+	RequestedAt time.Time
+	Latency     time.Duration
+	TTFT        time.Duration
+	Failed      bool
+	Fail        Failure
+	Detail      Detail
+	// ResponseHeaders stores a snapshot of upstream response headers for usage sinks.
+	ResponseHeaders http.Header
 }
 
-// Detail holds the token usage breakdown plus response metadata parsed with it.
+// Failure holds HTTP failure metadata for an upstream request attempt.
+type Failure struct {
+	StatusCode int
+	Body       string
+}
+
+// Detail holds the token usage breakdown.
 type Detail struct {
-	UpstreamModel              string
-	InputTokens                int64
-	OutputTokens               int64
-	ReasoningTokens            int64
-	CachedTokens               int64
-	CacheCreationInputTokens   int64
-	CacheCreation5mInputTokens int64
-	CacheCreation1hInputTokens int64
-	CacheReadInputTokens       int64
-	TotalTokens                int64
+	InputTokens         int64
+	OutputTokens        int64
+	ReasoningTokens     int64
+	CachedTokens        int64
+	CacheReadTokens     int64
+	CacheCreationTokens int64
+	TotalTokens         int64
+}
+
+type requestedModelAliasContextKey struct{}
+type reasoningEffortContextKey struct{}
+type serviceTierContextKey struct{}
+
+// WithRequestedModelAlias stores the client-requested model name for usage sinks.
+func WithRequestedModelAlias(ctx context.Context, alias string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	alias = strings.TrimSpace(alias)
+	if alias == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, requestedModelAliasContextKey{}, alias)
+}
+
+// RequestedModelAliasFromContext returns the client-requested model name stored in ctx.
+func RequestedModelAliasFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	raw := ctx.Value(requestedModelAliasContextKey{})
+	switch value := raw.(type) {
+	case string:
+		return strings.TrimSpace(value)
+	case []byte:
+		return strings.TrimSpace(string(value))
+	default:
+		return ""
+	}
+}
+
+// WithReasoningEffort stores the client-requested reasoning effort for usage sinks.
+func WithReasoningEffort(ctx context.Context, effort string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	effort = strings.TrimSpace(effort)
+	if effort == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, reasoningEffortContextKey{}, effort)
+}
+
+// ReasoningEffortFromContext returns the client-requested reasoning effort stored in ctx.
+func ReasoningEffortFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	raw := ctx.Value(reasoningEffortContextKey{})
+	switch value := raw.(type) {
+	case string:
+		return strings.TrimSpace(value)
+	case []byte:
+		return strings.TrimSpace(string(value))
+	default:
+		return ""
+	}
+}
+
+// WithServiceTier stores the client-requested service tier for usage sinks.
+func WithServiceTier(ctx context.Context, tier string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	tier = strings.TrimSpace(tier)
+	if tier == "" {
+		tier = DefaultServiceTier
+	}
+	return context.WithValue(ctx, serviceTierContextKey{}, tier)
+}
+
+// ServiceTierFromContext returns the client-requested service tier stored in ctx.
+func ServiceTierFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return DefaultServiceTier
+	}
+	raw := ctx.Value(serviceTierContextKey{})
+	switch value := raw.(type) {
+	case string:
+		tier := strings.TrimSpace(value)
+		if tier == "" {
+			return DefaultServiceTier
+		}
+		return tier
+	case []byte:
+		tier := strings.TrimSpace(string(value))
+		if tier == "" {
+			return DefaultServiceTier
+		}
+		return tier
+	default:
+		return DefaultServiceTier
+	}
 }
 
 // Plugin consumes usage records emitted by the proxy runtime.
@@ -78,22 +168,19 @@ type Manager struct {
 	stopOnce sync.Once
 	cancel   context.CancelFunc
 
-	mu       sync.Mutex
-	cond     *sync.Cond
-	queue    []queueItem
-	maxQueue int
-	closed   bool
+	mu     sync.Mutex
+	cond   *sync.Cond
+	queue  []queueItem
+	closed bool
 
 	pluginsMu sync.RWMutex
 	plugins   []Plugin
+	named     map[string]int
 }
 
 // NewManager constructs a manager with a buffered queue.
 func NewManager(buffer int) *Manager {
-	if buffer <= 0 {
-		buffer = 512
-	}
-	m := &Manager{maxQueue: buffer}
+	m := &Manager{}
 	m.cond = sync.NewCond(&m.mu)
 	return m
 }
@@ -139,6 +226,30 @@ func (m *Manager) Register(plugin Plugin) {
 	m.pluginsMu.Unlock()
 }
 
+// RegisterNamed registers or replaces a plugin by name.
+func (m *Manager) RegisterNamed(name string, plugin Plugin) {
+	if m == nil || plugin == nil {
+		return
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return
+	}
+
+	m.pluginsMu.Lock()
+	if m.named == nil {
+		m.named = make(map[string]int)
+	}
+	if index, exists := m.named[name]; exists && index >= 0 && index < len(m.plugins) {
+		m.plugins[index] = plugin
+		m.pluginsMu.Unlock()
+		return
+	}
+	m.named[name] = len(m.plugins)
+	m.plugins = append(m.plugins, plugin)
+	m.pluginsMu.Unlock()
+}
+
 // Publish enqueues a usage record for processing. If no plugin is registered
 // the record will be discarded downstream.
 func (m *Manager) Publish(ctx context.Context, record Record) {
@@ -152,22 +263,9 @@ func (m *Manager) Publish(ctx context.Context, record Record) {
 		m.mu.Unlock()
 		return
 	}
-	m.trimQueueForAppendLocked()
 	m.queue = append(m.queue, queueItem{ctx: ctx, record: record})
 	m.mu.Unlock()
 	m.cond.Signal()
-}
-
-func (m *Manager) trimQueueForAppendLocked() {
-	if m == nil || m.maxQueue <= 0 || len(m.queue) < m.maxQueue {
-		return
-	}
-	drop := len(m.queue) - m.maxQueue + 1
-	copy(m.queue, m.queue[drop:])
-	for i := len(m.queue) - drop; i < len(m.queue); i++ {
-		m.queue[i] = queueItem{}
-	}
-	m.queue = m.queue[:len(m.queue)-drop]
 }
 
 func (m *Manager) run(ctx context.Context) {
@@ -214,56 +312,14 @@ func safeInvoke(plugin Plugin, ctx context.Context, record Record) {
 
 var defaultManager = NewManager(512)
 
-var requestCounter atomic.Uint64
-
-var ErrParallelRequestAborted = errors.New("parallel upstream request aborted after another candidate succeeded")
-
-// EnsureRequestContext attaches a process-local downstream request count when missing.
-func EnsureRequestContext(ctx context.Context) context.Context {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if MetadataFromContext(ctx).RequestCount > 0 {
-		return ctx
-	}
-	return WithRequestMetadata(ctx, RequestMetadata{RequestCount: requestCounter.Add(1)})
-}
-
-// CurrentRequestCount returns the latest process-local downstream request sequence.
-func CurrentRequestCount() uint64 {
-	return requestCounter.Load()
-}
-
-// IsParallelRequestAborted reports whether ctx was canceled because another parallel candidate succeeded.
-func IsParallelRequestAborted(ctx context.Context) bool {
-	if ctx == nil {
-		return false
-	}
-	return errors.Is(context.Cause(ctx), ErrParallelRequestAborted)
-}
-
-// WithRequestMetadata returns a context carrying usage request metadata.
-func WithRequestMetadata(ctx context.Context, metadata RequestMetadata) context.Context {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	return context.WithValue(ctx, requestMetadataKey{}, metadata)
-}
-
-// MetadataFromContext returns request metadata previously attached to ctx.
-func MetadataFromContext(ctx context.Context) RequestMetadata {
-	if ctx == nil {
-		return RequestMetadata{}
-	}
-	metadata, _ := ctx.Value(requestMetadataKey{}).(RequestMetadata)
-	return metadata
-}
-
 // DefaultManager returns the global usage manager instance.
 func DefaultManager() *Manager { return defaultManager }
 
 // RegisterPlugin registers a plugin on the default manager.
 func RegisterPlugin(plugin Plugin) { DefaultManager().Register(plugin) }
+
+// RegisterNamedPlugin registers or replaces a named plugin on the default manager.
+func RegisterNamedPlugin(name string, plugin Plugin) { DefaultManager().RegisterNamed(name, plugin) }
 
 // PublishRecord publishes a record using the default manager.
 func PublishRecord(ctx context.Context, record Record) { DefaultManager().Publish(ctx, record) }

@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 )
 
 // Generic helpers for list[string]
@@ -139,32 +139,20 @@ func (h *Handler) PutGeminiKeys(c *gin.Context) {
 		}
 		arr = obj.Items
 	}
-	for i := range arr {
-		normalizeGeminiKey(&arr[i])
-	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.cfg == nil {
-		h.cfg = &config.Config{}
-	}
 	h.cfg.GeminiKey = append([]config.GeminiKey(nil), arr...)
 	h.cfg.SanitizeGeminiKeys()
-	h.cfg.ApplyRoutingDefaults()
 	h.persistLocked(c)
 }
 func (h *Handler) PatchGeminiKey(c *gin.Context) {
 	type geminiKeyPatch struct {
-		APIKey         *string                        `json:"api-key"`
-		Priority       *int                           `json:"priority"`
-		Prefix         *string                        `json:"prefix"`
-		BaseURL        *string                        `json:"base-url"`
-		ProxyURL       *string                        `json:"proxy-url"`
-		BackoffMode    *string                        `json:"backoff-mode"`
-		RequestRetry   *int                           `json:"request-retry"`
-		ErrorControl   *config.ErrorControlPolicy     `json:"error-control"`
-		Cooldown       *config.ProviderCooldownConfig `json:"cooldown"`
-		Headers        *map[string]string             `json:"headers"`
-		ExcludedModels *[]string                      `json:"excluded-models"`
+		APIKey         *string            `json:"api-key"`
+		Prefix         *string            `json:"prefix"`
+		BaseURL        *string            `json:"base-url"`
+		ProxyURL       *string            `json:"proxy-url"`
+		Headers        *map[string]string `json:"headers"`
+		ExcludedModels *[]string          `json:"excluded-models"`
 	}
 	var body struct {
 		Index *int            `json:"index"`
@@ -209,13 +197,6 @@ func (h *Handler) PatchGeminiKey(c *gin.Context) {
 		}
 		entry.APIKey = trimmed
 	}
-	if body.Value.Priority != nil {
-		if *body.Value.Priority < 0 {
-			c.JSON(400, gin.H{"error": "priority must be non-negative"})
-			return
-		}
-		entry.Priority = config.DefaultIntPtr(*body.Value.Priority)
-	}
 	if body.Value.Prefix != nil {
 		entry.Prefix = strings.TrimSpace(*body.Value.Prefix)
 	}
@@ -225,25 +206,6 @@ func (h *Handler) PatchGeminiKey(c *gin.Context) {
 	if body.Value.ProxyURL != nil {
 		entry.ProxyURL = strings.TrimSpace(*body.Value.ProxyURL)
 	}
-	if body.Value.BackoffMode != nil {
-		entry.BackoffMode = normalizeBackoffMode(*body.Value.BackoffMode)
-		if entry.BackoffMode != "custom" {
-			entry.RequestRetry = nil
-		}
-	}
-	if body.Value.RequestRetry != nil {
-		if *body.Value.RequestRetry < 0 {
-			c.JSON(400, gin.H{"error": "request-retry must be non-negative"})
-			return
-		}
-		entry.RequestRetry = config.DefaultIntPtr(*body.Value.RequestRetry)
-	}
-	if body.Value.ErrorControl != nil {
-		entry.ErrorControl = normalizeErrorControlPolicy(*body.Value.ErrorControl)
-	}
-	if body.Value.Cooldown != nil {
-		entry.Cooldown = normalizeProviderCooldownConfig(*body.Value.Cooldown)
-	}
 	if body.Value.Headers != nil {
 		entry.Headers = config.NormalizeHeaders(*body.Value.Headers)
 	}
@@ -252,7 +214,6 @@ func (h *Handler) PatchGeminiKey(c *gin.Context) {
 	}
 	h.cfg.GeminiKey[targetIndex] = entry
 	h.cfg.SanitizeGeminiKeys()
-	h.cfg.ApplyRoutingDefaults()
 	h.persistLocked(c)
 }
 
@@ -340,28 +301,21 @@ func (h *Handler) PutClaudeKeys(c *gin.Context) {
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.cfg == nil {
-		h.cfg = &config.Config{}
-	}
 	h.cfg.ClaudeKey = arr
 	h.cfg.SanitizeClaudeKeys()
-	h.cfg.ApplyRoutingDefaults()
 	h.persistLocked(c)
 }
 func (h *Handler) PatchClaudeKey(c *gin.Context) {
 	type claudeKeyPatch struct {
-		APIKey         *string                        `json:"api-key"`
-		Priority       *int                           `json:"priority"`
-		Prefix         *string                        `json:"prefix"`
-		BaseURL        *string                        `json:"base-url"`
-		ProxyURL       *string                        `json:"proxy-url"`
-		BackoffMode    *string                        `json:"backoff-mode"`
-		RequestRetry   *int                           `json:"request-retry"`
-		ErrorControl   *config.ErrorControlPolicy     `json:"error-control"`
-		Cooldown       *config.ProviderCooldownConfig `json:"cooldown"`
-		Models         *[]config.ClaudeModel          `json:"models"`
-		Headers        *map[string]string             `json:"headers"`
-		ExcludedModels *[]string                      `json:"excluded-models"`
+		APIKey                  *string               `json:"api-key"`
+		Prefix                  *string               `json:"prefix"`
+		BaseURL                 *string               `json:"base-url"`
+		AuthMode                *string               `json:"auth-mode"`
+		ProxyURL                *string               `json:"proxy-url"`
+		Models                  *[]config.ClaudeModel `json:"models"`
+		Headers                 *map[string]string    `json:"headers"`
+		ExcludedModels          *[]string             `json:"excluded-models"`
+		RebuildMidSystemMessage *bool                 `json:"rebuild-mid-system-message"`
 	}
 	var body struct {
 		Index *int            `json:"index"`
@@ -397,40 +351,17 @@ func (h *Handler) PatchClaudeKey(c *gin.Context) {
 	if body.Value.APIKey != nil {
 		entry.APIKey = strings.TrimSpace(*body.Value.APIKey)
 	}
-	if body.Value.Priority != nil {
-		if *body.Value.Priority < 0 {
-			c.JSON(400, gin.H{"error": "priority must be non-negative"})
-			return
-		}
-		entry.Priority = config.DefaultIntPtr(*body.Value.Priority)
-	}
 	if body.Value.Prefix != nil {
 		entry.Prefix = strings.TrimSpace(*body.Value.Prefix)
 	}
 	if body.Value.BaseURL != nil {
 		entry.BaseURL = strings.TrimSpace(*body.Value.BaseURL)
 	}
+	if body.Value.AuthMode != nil {
+		entry.AuthMode = normalizeClaudeAuthModeValue(*body.Value.AuthMode)
+	}
 	if body.Value.ProxyURL != nil {
 		entry.ProxyURL = strings.TrimSpace(*body.Value.ProxyURL)
-	}
-	if body.Value.BackoffMode != nil {
-		entry.BackoffMode = normalizeBackoffMode(*body.Value.BackoffMode)
-		if entry.BackoffMode != "custom" {
-			entry.RequestRetry = nil
-		}
-	}
-	if body.Value.RequestRetry != nil {
-		if *body.Value.RequestRetry < 0 {
-			c.JSON(400, gin.H{"error": "request-retry must be non-negative"})
-			return
-		}
-		entry.RequestRetry = config.DefaultIntPtr(*body.Value.RequestRetry)
-	}
-	if body.Value.ErrorControl != nil {
-		entry.ErrorControl = normalizeErrorControlPolicy(*body.Value.ErrorControl)
-	}
-	if body.Value.Cooldown != nil {
-		entry.Cooldown = normalizeProviderCooldownConfig(*body.Value.Cooldown)
 	}
 	if body.Value.Models != nil {
 		entry.Models = append([]config.ClaudeModel(nil), (*body.Value.Models)...)
@@ -441,10 +372,12 @@ func (h *Handler) PatchClaudeKey(c *gin.Context) {
 	if body.Value.ExcludedModels != nil {
 		entry.ExcludedModels = config.NormalizeExcludedModels(*body.Value.ExcludedModels)
 	}
+	if body.Value.RebuildMidSystemMessage != nil {
+		entry.RebuildMidSystemMessage = *body.Value.RebuildMidSystemMessage
+	}
 	normalizeClaudeKey(&entry)
 	h.cfg.ClaudeKey[targetIndex] = entry
 	h.cfg.SanitizeClaudeKeys()
-	h.cfg.ApplyRoutingDefaults()
 	h.persistLocked(c)
 }
 
@@ -531,27 +464,20 @@ func (h *Handler) PutOpenAICompat(c *gin.Context) {
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.cfg == nil {
-		h.cfg = &config.Config{}
-	}
 	h.cfg.OpenAICompatibility = filtered
 	h.cfg.SanitizeOpenAICompatibility()
-	h.cfg.ApplyRoutingDefaults()
 	h.persistLocked(c)
 }
 func (h *Handler) PatchOpenAICompat(c *gin.Context) {
 	type openAICompatPatch struct {
-		Name          *string                             `json:"name"`
-		Priority      *int                                `json:"priority"`
-		Prefix        *string                             `json:"prefix"`
-		BaseURL       *string                             `json:"base-url"`
-		APIKeyEntries *[]config.OpenAICompatibilityAPIKey `json:"api-key-entries"`
-		Models        *[]config.OpenAICompatibilityModel  `json:"models"`
-		Headers       *map[string]string                  `json:"headers"`
-		BackoffMode   *string                             `json:"backoff-mode"`
-		RequestRetry  *int                                `json:"request-retry"`
-		ErrorControl  *config.ErrorControlPolicy          `json:"error-control"`
-		Cooldown      *config.ProviderCooldownConfig      `json:"cooldown"`
+		Name           *string                             `json:"name"`
+		Prefix         *string                             `json:"prefix"`
+		Disabled       *bool                               `json:"disabled"`
+		DisableCooling *bool                               `json:"disable-cooling"`
+		BaseURL        *string                             `json:"base-url"`
+		APIKeyEntries  *[]config.OpenAICompatibilityAPIKey `json:"api-key-entries"`
+		Models         *[]config.OpenAICompatibilityModel  `json:"models"`
+		Headers        *map[string]string                  `json:"headers"`
 	}
 	var body struct {
 		Name  *string            `json:"name"`
@@ -587,15 +513,14 @@ func (h *Handler) PatchOpenAICompat(c *gin.Context) {
 	if body.Value.Name != nil {
 		entry.Name = strings.TrimSpace(*body.Value.Name)
 	}
-	if body.Value.Priority != nil {
-		if *body.Value.Priority < 0 {
-			c.JSON(400, gin.H{"error": "priority must be non-negative"})
-			return
-		}
-		entry.Priority = config.DefaultIntPtr(*body.Value.Priority)
-	}
 	if body.Value.Prefix != nil {
 		entry.Prefix = strings.TrimSpace(*body.Value.Prefix)
+	}
+	if body.Value.Disabled != nil {
+		entry.Disabled = *body.Value.Disabled
+	}
+	if body.Value.DisableCooling != nil {
+		entry.DisableCooling = *body.Value.DisableCooling
 	}
 	if body.Value.BaseURL != nil {
 		trimmed := strings.TrimSpace(*body.Value.BaseURL)
@@ -616,29 +541,9 @@ func (h *Handler) PatchOpenAICompat(c *gin.Context) {
 	if body.Value.Headers != nil {
 		entry.Headers = config.NormalizeHeaders(*body.Value.Headers)
 	}
-	if body.Value.BackoffMode != nil {
-		entry.BackoffMode = normalizeBackoffMode(*body.Value.BackoffMode)
-		if entry.BackoffMode != "custom" {
-			entry.RequestRetry = nil
-		}
-	}
-	if body.Value.RequestRetry != nil {
-		if *body.Value.RequestRetry < 0 {
-			c.JSON(400, gin.H{"error": "request-retry must be non-negative"})
-			return
-		}
-		entry.RequestRetry = config.DefaultIntPtr(*body.Value.RequestRetry)
-	}
-	if body.Value.ErrorControl != nil {
-		entry.ErrorControl = normalizeErrorControlPolicy(*body.Value.ErrorControl)
-	}
-	if body.Value.Cooldown != nil {
-		entry.Cooldown = normalizeProviderCooldownConfig(*body.Value.Cooldown)
-	}
 	normalizeOpenAICompatibilityEntry(&entry)
 	h.cfg.OpenAICompatibility[targetIndex] = entry
 	h.cfg.SanitizeOpenAICompatibility()
-	h.cfg.ApplyRoutingDefaults()
 	h.persistLocked(c)
 }
 
@@ -700,28 +605,19 @@ func (h *Handler) PutVertexCompatKeys(c *gin.Context) {
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.cfg == nil {
-		h.cfg = &config.Config{}
-	}
 	h.cfg.VertexCompatAPIKey = append([]config.VertexCompatKey(nil), arr...)
 	h.cfg.SanitizeVertexCompatKeys()
-	h.cfg.ApplyRoutingDefaults()
 	h.persistLocked(c)
 }
 func (h *Handler) PatchVertexCompatKey(c *gin.Context) {
 	type vertexCompatPatch struct {
-		APIKey         *string                        `json:"api-key"`
-		Priority       *int                           `json:"priority"`
-		Prefix         *string                        `json:"prefix"`
-		BaseURL        *string                        `json:"base-url"`
-		ProxyURL       *string                        `json:"proxy-url"`
-		BackoffMode    *string                        `json:"backoff-mode"`
-		RequestRetry   *int                           `json:"request-retry"`
-		ErrorControl   *config.ErrorControlPolicy     `json:"error-control"`
-		Cooldown       *config.ProviderCooldownConfig `json:"cooldown"`
-		Headers        *map[string]string             `json:"headers"`
-		Models         *[]config.VertexCompatModel    `json:"models"`
-		ExcludedModels *[]string                      `json:"excluded-models"`
+		APIKey         *string                     `json:"api-key"`
+		Prefix         *string                     `json:"prefix"`
+		BaseURL        *string                     `json:"base-url"`
+		ProxyURL       *string                     `json:"proxy-url"`
+		Headers        *map[string]string          `json:"headers"`
+		Models         *[]config.VertexCompatModel `json:"models"`
+		ExcludedModels *[]string                   `json:"excluded-models"`
 	}
 	var body struct {
 		Index *int               `json:"index"`
@@ -766,13 +662,6 @@ func (h *Handler) PatchVertexCompatKey(c *gin.Context) {
 		}
 		entry.APIKey = trimmed
 	}
-	if body.Value.Priority != nil {
-		if *body.Value.Priority < 0 {
-			c.JSON(400, gin.H{"error": "priority must be non-negative"})
-			return
-		}
-		entry.Priority = config.DefaultIntPtr(*body.Value.Priority)
-	}
 	if body.Value.Prefix != nil {
 		entry.Prefix = strings.TrimSpace(*body.Value.Prefix)
 	}
@@ -789,25 +678,6 @@ func (h *Handler) PatchVertexCompatKey(c *gin.Context) {
 	if body.Value.ProxyURL != nil {
 		entry.ProxyURL = strings.TrimSpace(*body.Value.ProxyURL)
 	}
-	if body.Value.BackoffMode != nil {
-		entry.BackoffMode = normalizeBackoffMode(*body.Value.BackoffMode)
-		if entry.BackoffMode != "custom" {
-			entry.RequestRetry = nil
-		}
-	}
-	if body.Value.RequestRetry != nil {
-		if *body.Value.RequestRetry < 0 {
-			c.JSON(400, gin.H{"error": "request-retry must be non-negative"})
-			return
-		}
-		entry.RequestRetry = config.DefaultIntPtr(*body.Value.RequestRetry)
-	}
-	if body.Value.ErrorControl != nil {
-		entry.ErrorControl = normalizeErrorControlPolicy(*body.Value.ErrorControl)
-	}
-	if body.Value.Cooldown != nil {
-		entry.Cooldown = normalizeProviderCooldownConfig(*body.Value.Cooldown)
-	}
 	if body.Value.Headers != nil {
 		entry.Headers = config.NormalizeHeaders(*body.Value.Headers)
 	}
@@ -820,7 +690,6 @@ func (h *Handler) PatchVertexCompatKey(c *gin.Context) {
 	normalizeVertexCompatKey(&entry)
 	h.cfg.VertexCompatAPIKey[targetIndex] = entry
 	h.cfg.SanitizeVertexCompatKeys()
-	h.cfg.ApplyRoutingDefaults()
 	h.persistLocked(c)
 }
 
@@ -1092,29 +961,20 @@ func (h *Handler) PutCodexKeys(c *gin.Context) {
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.cfg == nil {
-		h.cfg = &config.Config{}
-	}
 	h.cfg.CodexKey = filtered
 	h.cfg.SanitizeCodexKeys()
-	h.cfg.ApplyRoutingDefaults()
 	h.persistLocked(c)
 }
 func (h *Handler) PatchCodexKey(c *gin.Context) {
 	type codexKeyPatch struct {
-		APIKey         *string                        `json:"api-key"`
-		Priority       *int                           `json:"priority"`
-		Prefix         *string                        `json:"prefix"`
-		BaseURL        *string                        `json:"base-url"`
-		UseV1          *bool                          `json:"use-v1"`
-		ProxyURL       *string                        `json:"proxy-url"`
-		BackoffMode    *string                        `json:"backoff-mode"`
-		RequestRetry   *int                           `json:"request-retry"`
-		ErrorControl   *config.ErrorControlPolicy     `json:"error-control"`
-		Cooldown       *config.ProviderCooldownConfig `json:"cooldown"`
-		Models         *[]config.CodexModel           `json:"models"`
-		Headers        *map[string]string             `json:"headers"`
-		ExcludedModels *[]string                      `json:"excluded-models"`
+		APIKey         *string              `json:"api-key"`
+		Prefix         *string              `json:"prefix"`
+		BaseURL        *string              `json:"base-url"`
+		UseV1          *bool                `json:"use-v1"`
+		ProxyURL       *string              `json:"proxy-url"`
+		Models         *[]config.CodexModel `json:"models"`
+		Headers        *map[string]string   `json:"headers"`
+		ExcludedModels *[]string            `json:"excluded-models"`
 	}
 	var body struct {
 		Index *int           `json:"index"`
@@ -1150,12 +1010,8 @@ func (h *Handler) PatchCodexKey(c *gin.Context) {
 	if body.Value.APIKey != nil {
 		entry.APIKey = strings.TrimSpace(*body.Value.APIKey)
 	}
-	if body.Value.Priority != nil {
-		if *body.Value.Priority < 0 {
-			c.JSON(400, gin.H{"error": "priority must be non-negative"})
-			return
-		}
-		entry.Priority = config.DefaultIntPtr(*body.Value.Priority)
+	if body.Value.UseV1 != nil {
+		entry.UseV1 = config.DefaultBoolPtr(*body.Value.UseV1)
 	}
 	if body.Value.Prefix != nil {
 		entry.Prefix = strings.TrimSpace(*body.Value.Prefix)
@@ -1170,30 +1026,8 @@ func (h *Handler) PatchCodexKey(c *gin.Context) {
 		}
 		entry.BaseURL = trimmed
 	}
-	if body.Value.UseV1 != nil {
-		entry.UseV1 = config.DefaultBoolPtr(*body.Value.UseV1)
-	}
 	if body.Value.ProxyURL != nil {
 		entry.ProxyURL = strings.TrimSpace(*body.Value.ProxyURL)
-	}
-	if body.Value.BackoffMode != nil {
-		entry.BackoffMode = normalizeBackoffMode(*body.Value.BackoffMode)
-		if entry.BackoffMode != "custom" {
-			entry.RequestRetry = nil
-		}
-	}
-	if body.Value.RequestRetry != nil {
-		if *body.Value.RequestRetry < 0 {
-			c.JSON(400, gin.H{"error": "request-retry must be non-negative"})
-			return
-		}
-		entry.RequestRetry = config.DefaultIntPtr(*body.Value.RequestRetry)
-	}
-	if body.Value.ErrorControl != nil {
-		entry.ErrorControl = normalizeErrorControlPolicy(*body.Value.ErrorControl)
-	}
-	if body.Value.Cooldown != nil {
-		entry.Cooldown = normalizeProviderCooldownConfig(*body.Value.Cooldown)
 	}
 	if body.Value.Models != nil {
 		entry.Models = append([]config.CodexModel(nil), (*body.Value.Models)...)
@@ -1207,7 +1041,6 @@ func (h *Handler) PatchCodexKey(c *gin.Context) {
 	normalizeCodexKey(&entry)
 	h.cfg.CodexKey[targetIndex] = entry
 	h.cfg.SanitizeCodexKeys()
-	h.cfg.ApplyRoutingDefaults()
 	h.persistLocked(c)
 }
 
@@ -1271,9 +1104,6 @@ func normalizeOpenAICompatibilityEntry(entry *config.OpenAICompatibility) {
 	// Trim base-url; empty base-url indicates provider should be removed by sanitization
 	entry.BaseURL = strings.TrimSpace(entry.BaseURL)
 	entry.Headers = config.NormalizeHeaders(entry.Headers)
-	normalizeBackoffSettings(&entry.BackoffMode, &entry.RequestRetry)
-	entry.ErrorControl = normalizeErrorControlPolicy(entry.ErrorControl)
-	entry.Cooldown = normalizeProviderCooldownConfig(entry.Cooldown)
 	existing := make(map[string]struct{}, len(entry.APIKeyEntries))
 	for i := range entry.APIKeyEntries {
 		trimmed := strings.TrimSpace(entry.APIKeyEntries[i].APIKey)
@@ -1282,35 +1112,6 @@ func normalizeOpenAICompatibilityEntry(entry *config.OpenAICompatibility) {
 			existing[trimmed] = struct{}{}
 		}
 	}
-}
-
-func normalizeGeminiKey(entry *config.GeminiKey) {
-	if entry == nil {
-		return
-	}
-	entry.APIKey = strings.TrimSpace(entry.APIKey)
-	entry.Prefix = strings.TrimSpace(entry.Prefix)
-	entry.BaseURL = strings.TrimSpace(entry.BaseURL)
-	entry.ProxyURL = strings.TrimSpace(entry.ProxyURL)
-	entry.Headers = config.NormalizeHeaders(entry.Headers)
-	entry.ExcludedModels = config.NormalizeExcludedModels(entry.ExcludedModels)
-	normalizeBackoffSettings(&entry.BackoffMode, &entry.RequestRetry)
-	entry.ErrorControl = normalizeErrorControlPolicy(entry.ErrorControl)
-	entry.Cooldown = normalizeProviderCooldownConfig(entry.Cooldown)
-	if len(entry.Models) == 0 {
-		return
-	}
-	normalized := make([]config.GeminiModel, 0, len(entry.Models))
-	for i := range entry.Models {
-		model := entry.Models[i]
-		model.Name = strings.TrimSpace(model.Name)
-		model.Alias = strings.TrimSpace(model.Alias)
-		if model.Name == "" && model.Alias == "" {
-			continue
-		}
-		normalized = append(normalized, model)
-	}
-	entry.Models = normalized
 }
 
 func normalizedOpenAICompatibilityEntries(entries []config.OpenAICompatibility) []config.OpenAICompatibility {
@@ -1329,17 +1130,26 @@ func normalizedOpenAICompatibilityEntries(entries []config.OpenAICompatibility) 
 	return out
 }
 
+// normalizeClaudeAuthModeValue maps auth-mode inputs onto canonical config values.
+func normalizeClaudeAuthModeValue(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "api-key", "api_key", "apikey", "x-api-key", "x_api_key":
+		return "api-key"
+	case "bearer", "oauth", "authorization", "authorization-bearer":
+		return "bearer"
+	default:
+		return ""
+	}
+}
+
 func normalizeClaudeKey(entry *config.ClaudeKey) {
 	if entry == nil {
 		return
 	}
 	entry.APIKey = strings.TrimSpace(entry.APIKey)
 	entry.BaseURL = strings.TrimSpace(entry.BaseURL)
-	entry.AuthMode = normalizeClaudeAuthMode(entry.AuthMode)
+	entry.AuthMode = normalizeClaudeAuthModeValue(entry.AuthMode)
 	entry.ProxyURL = strings.TrimSpace(entry.ProxyURL)
-	normalizeBackoffSettings(&entry.BackoffMode, &entry.RequestRetry)
-	entry.ErrorControl = normalizeErrorControlPolicy(entry.ErrorControl)
-	entry.Cooldown = normalizeProviderCooldownConfig(entry.Cooldown)
 	entry.Headers = config.NormalizeHeaders(entry.Headers)
 	entry.ExcludedModels = config.NormalizeExcludedModels(entry.ExcludedModels)
 	if len(entry.Models) == 0 {
@@ -1358,19 +1168,6 @@ func normalizeClaudeKey(entry *config.ClaudeKey) {
 	entry.Models = normalized
 }
 
-func normalizeClaudeAuthMode(mode string) string {
-	switch strings.ToLower(strings.TrimSpace(mode)) {
-	case "", "auto", "default":
-		return ""
-	case "api-key", "api_key", "apikey", "x-api-key", "x_api_key":
-		return "api-key"
-	case "bearer", "oauth", "authorization", "authorization-bearer":
-		return "bearer"
-	default:
-		return ""
-	}
-}
-
 func normalizeCodexKey(entry *config.CodexKey) {
 	if entry == nil {
 		return
@@ -1379,9 +1176,6 @@ func normalizeCodexKey(entry *config.CodexKey) {
 	entry.Prefix = strings.TrimSpace(entry.Prefix)
 	entry.BaseURL = strings.TrimSpace(entry.BaseURL)
 	entry.ProxyURL = strings.TrimSpace(entry.ProxyURL)
-	normalizeBackoffSettings(&entry.BackoffMode, &entry.RequestRetry)
-	entry.ErrorControl = normalizeErrorControlPolicy(entry.ErrorControl)
-	entry.Cooldown = normalizeProviderCooldownConfig(entry.Cooldown)
 	entry.Headers = config.NormalizeHeaders(entry.Headers)
 	entry.ExcludedModels = config.NormalizeExcludedModels(entry.ExcludedModels)
 	if len(entry.Models) == 0 {
@@ -1408,9 +1202,6 @@ func normalizeVertexCompatKey(entry *config.VertexCompatKey) {
 	entry.Prefix = strings.TrimSpace(entry.Prefix)
 	entry.BaseURL = strings.TrimSpace(entry.BaseURL)
 	entry.ProxyURL = strings.TrimSpace(entry.ProxyURL)
-	normalizeBackoffSettings(&entry.BackoffMode, &entry.RequestRetry)
-	entry.ErrorControl = normalizeErrorControlPolicy(entry.ErrorControl)
-	entry.Cooldown = normalizeProviderCooldownConfig(entry.Cooldown)
 	entry.Headers = config.NormalizeHeaders(entry.Headers)
 	entry.ExcludedModels = config.NormalizeExcludedModels(entry.ExcludedModels)
 	if len(entry.Models) == 0 {
@@ -1427,93 +1218,6 @@ func normalizeVertexCompatKey(entry *config.VertexCompatKey) {
 		normalized = append(normalized, model)
 	}
 	entry.Models = normalized
-}
-
-func normalizeBackoffMode(raw string) string {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "off":
-		return "off"
-	case "custom":
-		return "custom"
-	default:
-		return "default"
-	}
-}
-
-func normalizeBackoffSettings(mode *string, requestRetry **int) {
-	if mode == nil || requestRetry == nil {
-		return
-	}
-	*mode = normalizeBackoffMode(*mode)
-	if *mode != "custom" {
-		*requestRetry = nil
-		return
-	}
-	if *requestRetry == nil {
-		return
-	}
-	value := **requestRetry
-	if value < 0 {
-		value = 0
-	}
-	*requestRetry = config.DefaultIntPtr(value)
-}
-
-func normalizeErrorControlPolicy(policy config.ErrorControlPolicy) config.ErrorControlPolicy {
-	if policy.RetryRounds != nil {
-		value := *policy.RetryRounds
-		if value < 1 {
-			value = 1
-		}
-		policy.RetryRounds = config.DefaultIntPtr(value)
-	}
-	if policy.RoundBackoffBase != nil {
-		value := *policy.RoundBackoffBase
-		if value <= 0 {
-			value = 1
-		}
-		policy.RoundBackoffBase = config.DefaultFloatPtr(value)
-	}
-	if policy.RoundBackoffExponent != nil {
-		value := *policy.RoundBackoffExponent
-		if value <= 0 {
-			value = 2
-		}
-		policy.RoundBackoffExponent = config.DefaultFloatPtr(value)
-	}
-	if policy.RoundBackoffMax != nil {
-		value := *policy.RoundBackoffMax
-		if value <= 0 {
-			value = 60
-		}
-		policy.RoundBackoffMax = config.DefaultFloatPtr(value)
-	}
-	return policy
-}
-
-func normalizeProviderCooldownConfig(policy config.ProviderCooldownConfig) config.ProviderCooldownConfig {
-	if policy.Start != nil {
-		value := *policy.Start
-		if value < 1 {
-			value = config.DefaultProviderCooldownStart
-		}
-		policy.Start = config.DefaultIntPtr(value)
-	}
-	if policy.Exponent != nil {
-		value := *policy.Exponent
-		if value <= 0 {
-			value = config.DefaultProviderCooldownExponent
-		}
-		policy.Exponent = config.DefaultFloatPtr(value)
-	}
-	if policy.Max != nil {
-		value := *policy.Max
-		if value < 1 {
-			value = config.DefaultProviderCooldownMax
-		}
-		policy.Max = config.DefaultIntPtr(value)
-	}
-	return policy
 }
 
 func sanitizedOAuthModelAlias(entries map[string][]config.OAuthModelAlias) map[string][]config.OAuthModelAlias {
@@ -1536,304 +1240,4 @@ func sanitizedOAuthModelAlias(entries map[string][]config.OAuthModelAlias) map[s
 		return nil
 	}
 	return cfg.OAuthModelAlias
-}
-
-// GetAmpCode returns the complete ampcode configuration.
-func (h *Handler) GetAmpCode(c *gin.Context) {
-	if h == nil || h.cfg == nil {
-		c.JSON(200, gin.H{"ampcode": config.AmpCode{}})
-		return
-	}
-	c.JSON(200, gin.H{"ampcode": h.cfg.AmpCode})
-}
-
-// GetAmpUpstreamURL returns the ampcode upstream URL.
-func (h *Handler) GetAmpUpstreamURL(c *gin.Context) {
-	if h == nil || h.cfg == nil {
-		c.JSON(200, gin.H{"upstream-url": ""})
-		return
-	}
-	c.JSON(200, gin.H{"upstream-url": h.cfg.AmpCode.UpstreamURL})
-}
-
-// PutAmpUpstreamURL updates the ampcode upstream URL.
-func (h *Handler) PutAmpUpstreamURL(c *gin.Context) {
-	h.updateStringField(c, func(v string) { h.cfg.AmpCode.UpstreamURL = strings.TrimSpace(v) })
-}
-
-// DeleteAmpUpstreamURL clears the ampcode upstream URL.
-func (h *Handler) DeleteAmpUpstreamURL(c *gin.Context) {
-	h.cfg.AmpCode.UpstreamURL = ""
-	h.persist(c)
-}
-
-// GetAmpUpstreamAPIKey returns the ampcode upstream API key.
-func (h *Handler) GetAmpUpstreamAPIKey(c *gin.Context) {
-	if h == nil || h.cfg == nil {
-		c.JSON(200, gin.H{"upstream-api-key": ""})
-		return
-	}
-	c.JSON(200, gin.H{"upstream-api-key": h.cfg.AmpCode.UpstreamAPIKey})
-}
-
-// PutAmpUpstreamAPIKey updates the ampcode upstream API key.
-func (h *Handler) PutAmpUpstreamAPIKey(c *gin.Context) {
-	h.updateStringField(c, func(v string) { h.cfg.AmpCode.UpstreamAPIKey = strings.TrimSpace(v) })
-}
-
-// DeleteAmpUpstreamAPIKey clears the ampcode upstream API key.
-func (h *Handler) DeleteAmpUpstreamAPIKey(c *gin.Context) {
-	h.cfg.AmpCode.UpstreamAPIKey = ""
-	h.persist(c)
-}
-
-// GetAmpRestrictManagementToLocalhost returns the localhost restriction setting.
-func (h *Handler) GetAmpRestrictManagementToLocalhost(c *gin.Context) {
-	if h == nil || h.cfg == nil {
-		c.JSON(200, gin.H{"restrict-management-to-localhost": true})
-		return
-	}
-	c.JSON(200, gin.H{"restrict-management-to-localhost": h.cfg.AmpCode.RestrictManagementToLocalhost})
-}
-
-// PutAmpRestrictManagementToLocalhost updates the localhost restriction setting.
-func (h *Handler) PutAmpRestrictManagementToLocalhost(c *gin.Context) {
-	h.updateBoolField(c, func(v bool) { h.cfg.AmpCode.RestrictManagementToLocalhost = v })
-}
-
-// GetAmpModelMappings returns the ampcode model mappings.
-func (h *Handler) GetAmpModelMappings(c *gin.Context) {
-	if h == nil || h.cfg == nil {
-		c.JSON(200, gin.H{"model-mappings": []config.AmpModelMapping{}})
-		return
-	}
-	c.JSON(200, gin.H{"model-mappings": h.cfg.AmpCode.ModelMappings})
-}
-
-// PutAmpModelMappings replaces all ampcode model mappings.
-func (h *Handler) PutAmpModelMappings(c *gin.Context) {
-	var body struct {
-		Value []config.AmpModelMapping `json:"value"`
-	}
-	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(400, gin.H{"error": "invalid body"})
-		return
-	}
-	h.cfg.AmpCode.ModelMappings = body.Value
-	h.persist(c)
-}
-
-// PatchAmpModelMappings adds or updates model mappings.
-func (h *Handler) PatchAmpModelMappings(c *gin.Context) {
-	var body struct {
-		Value []config.AmpModelMapping `json:"value"`
-	}
-	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(400, gin.H{"error": "invalid body"})
-		return
-	}
-
-	existing := make(map[string]int)
-	for i, m := range h.cfg.AmpCode.ModelMappings {
-		existing[strings.TrimSpace(m.From)] = i
-	}
-
-	for _, newMapping := range body.Value {
-		from := strings.TrimSpace(newMapping.From)
-		if idx, ok := existing[from]; ok {
-			h.cfg.AmpCode.ModelMappings[idx] = newMapping
-		} else {
-			h.cfg.AmpCode.ModelMappings = append(h.cfg.AmpCode.ModelMappings, newMapping)
-			existing[from] = len(h.cfg.AmpCode.ModelMappings) - 1
-		}
-	}
-	h.persist(c)
-}
-
-// DeleteAmpModelMappings removes specified model mappings by "from" field.
-func (h *Handler) DeleteAmpModelMappings(c *gin.Context) {
-	var body struct {
-		Value []string `json:"value"`
-	}
-	if err := c.ShouldBindJSON(&body); err != nil || len(body.Value) == 0 {
-		h.cfg.AmpCode.ModelMappings = nil
-		h.persist(c)
-		return
-	}
-
-	toRemove := make(map[string]bool)
-	for _, from := range body.Value {
-		toRemove[strings.TrimSpace(from)] = true
-	}
-
-	newMappings := make([]config.AmpModelMapping, 0, len(h.cfg.AmpCode.ModelMappings))
-	for _, m := range h.cfg.AmpCode.ModelMappings {
-		if !toRemove[strings.TrimSpace(m.From)] {
-			newMappings = append(newMappings, m)
-		}
-	}
-	h.cfg.AmpCode.ModelMappings = newMappings
-	h.persist(c)
-}
-
-// GetAmpForceModelMappings returns whether model mappings are forced.
-func (h *Handler) GetAmpForceModelMappings(c *gin.Context) {
-	if h == nil || h.cfg == nil {
-		c.JSON(200, gin.H{"force-model-mappings": false})
-		return
-	}
-	c.JSON(200, gin.H{"force-model-mappings": h.cfg.AmpCode.ForceModelMappings})
-}
-
-// PutAmpForceModelMappings updates the force model mappings setting.
-func (h *Handler) PutAmpForceModelMappings(c *gin.Context) {
-	h.updateBoolField(c, func(v bool) { h.cfg.AmpCode.ForceModelMappings = v })
-}
-
-// GetAmpUpstreamAPIKeys returns the ampcode upstream API keys mapping.
-func (h *Handler) GetAmpUpstreamAPIKeys(c *gin.Context) {
-	if h == nil || h.cfg == nil {
-		c.JSON(200, gin.H{"upstream-api-keys": []config.AmpUpstreamAPIKeyEntry{}})
-		return
-	}
-	c.JSON(200, gin.H{"upstream-api-keys": h.cfg.AmpCode.UpstreamAPIKeys})
-}
-
-// PutAmpUpstreamAPIKeys replaces all ampcode upstream API keys mappings.
-func (h *Handler) PutAmpUpstreamAPIKeys(c *gin.Context) {
-	var body struct {
-		Value []config.AmpUpstreamAPIKeyEntry `json:"value"`
-	}
-	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(400, gin.H{"error": "invalid body"})
-		return
-	}
-	// Normalize entries: trim whitespace, filter empty
-	normalized := normalizeAmpUpstreamAPIKeyEntries(body.Value)
-	h.cfg.AmpCode.UpstreamAPIKeys = normalized
-	h.persist(c)
-}
-
-// PatchAmpUpstreamAPIKeys adds or updates upstream API keys entries.
-// Matching is done by upstream-api-key value.
-func (h *Handler) PatchAmpUpstreamAPIKeys(c *gin.Context) {
-	var body struct {
-		Value []config.AmpUpstreamAPIKeyEntry `json:"value"`
-	}
-	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(400, gin.H{"error": "invalid body"})
-		return
-	}
-
-	existing := make(map[string]int)
-	for i, entry := range h.cfg.AmpCode.UpstreamAPIKeys {
-		existing[strings.TrimSpace(entry.UpstreamAPIKey)] = i
-	}
-
-	for _, newEntry := range body.Value {
-		upstreamKey := strings.TrimSpace(newEntry.UpstreamAPIKey)
-		if upstreamKey == "" {
-			continue
-		}
-		normalizedEntry := config.AmpUpstreamAPIKeyEntry{
-			UpstreamAPIKey: upstreamKey,
-			APIKeys:        normalizeAPIKeysList(newEntry.APIKeys),
-		}
-		if idx, ok := existing[upstreamKey]; ok {
-			h.cfg.AmpCode.UpstreamAPIKeys[idx] = normalizedEntry
-		} else {
-			h.cfg.AmpCode.UpstreamAPIKeys = append(h.cfg.AmpCode.UpstreamAPIKeys, normalizedEntry)
-			existing[upstreamKey] = len(h.cfg.AmpCode.UpstreamAPIKeys) - 1
-		}
-	}
-	h.persist(c)
-}
-
-// DeleteAmpUpstreamAPIKeys removes specified upstream API keys entries.
-// Body must be JSON: {"value": ["<upstream-api-key>", ...]}.
-// If "value" is an empty array, clears all entries.
-// If JSON is invalid or "value" is missing/null, returns 400 and does not persist any change.
-func (h *Handler) DeleteAmpUpstreamAPIKeys(c *gin.Context) {
-	var body struct {
-		Value []string `json:"value"`
-	}
-	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(400, gin.H{"error": "invalid body"})
-		return
-	}
-
-	if body.Value == nil {
-		c.JSON(400, gin.H{"error": "missing value"})
-		return
-	}
-
-	// Empty array means clear all
-	if len(body.Value) == 0 {
-		h.cfg.AmpCode.UpstreamAPIKeys = nil
-		h.persist(c)
-		return
-	}
-
-	toRemove := make(map[string]bool)
-	for _, key := range body.Value {
-		trimmed := strings.TrimSpace(key)
-		if trimmed == "" {
-			continue
-		}
-		toRemove[trimmed] = true
-	}
-	if len(toRemove) == 0 {
-		c.JSON(400, gin.H{"error": "empty value"})
-		return
-	}
-
-	newEntries := make([]config.AmpUpstreamAPIKeyEntry, 0, len(h.cfg.AmpCode.UpstreamAPIKeys))
-	for _, entry := range h.cfg.AmpCode.UpstreamAPIKeys {
-		if !toRemove[strings.TrimSpace(entry.UpstreamAPIKey)] {
-			newEntries = append(newEntries, entry)
-		}
-	}
-	h.cfg.AmpCode.UpstreamAPIKeys = newEntries
-	h.persist(c)
-}
-
-// normalizeAmpUpstreamAPIKeyEntries normalizes a list of upstream API key entries.
-func normalizeAmpUpstreamAPIKeyEntries(entries []config.AmpUpstreamAPIKeyEntry) []config.AmpUpstreamAPIKeyEntry {
-	if len(entries) == 0 {
-		return nil
-	}
-	out := make([]config.AmpUpstreamAPIKeyEntry, 0, len(entries))
-	for _, entry := range entries {
-		upstreamKey := strings.TrimSpace(entry.UpstreamAPIKey)
-		if upstreamKey == "" {
-			continue
-		}
-		apiKeys := normalizeAPIKeysList(entry.APIKeys)
-		out = append(out, config.AmpUpstreamAPIKeyEntry{
-			UpstreamAPIKey: upstreamKey,
-			APIKeys:        apiKeys,
-		})
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
-}
-
-// normalizeAPIKeysList trims and filters empty strings from a list of API keys.
-func normalizeAPIKeysList(keys []string) []string {
-	if len(keys) == 0 {
-		return nil
-	}
-	out := make([]string, 0, len(keys))
-	for _, k := range keys {
-		trimmed := strings.TrimSpace(k)
-		if trimmed != "" {
-			out = append(out, trimmed)
-		}
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
 }

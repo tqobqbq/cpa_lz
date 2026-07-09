@@ -11,9 +11,9 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
-	sdkconfig "github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
+	sdkconfig "github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 	log "github.com/sirupsen/logrus"
 	"gopkg.in/yaml.v3"
 )
@@ -218,7 +218,7 @@ func (h *Handler) PutUsageStatisticsEnabled(c *gin.Context) {
 	h.updateBoolField(c, func(v bool) { h.cfg.UsageStatisticsEnabled = v })
 }
 
-// UsageStatisticsEnabled
+// LoggingToFile
 func (h *Handler) GetLoggingToFile(c *gin.Context) {
 	c.JSON(200, gin.H{"logging-to-file": h.cfg.LoggingToFile})
 }
@@ -296,45 +296,12 @@ func (h *Handler) PutMaxRetryInterval(c *gin.Context) {
 	h.updateIntField(c, func(v int) { h.cfg.MaxRetryInterval = v })
 }
 
-// Error control
-func (h *Handler) GetErrorControl(c *gin.Context) {
-	c.JSON(200, gin.H{"error-control": h.cfg.ErrorControl})
+// CodexRemoveEmptyInputName
+func (h *Handler) GetCodexRemoveEmptyInputName(c *gin.Context) {
+	c.JSON(200, gin.H{"codex-remove-empty-input-name": h.cfg.CodexRemoveEmptyInputName})
 }
-func (h *Handler) PutErrorControl(c *gin.Context) {
-	var body struct {
-		Value *config.ErrorControlConfig `json:"value"`
-	}
-	if err := c.ShouldBindJSON(&body); err != nil || body.Value == nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
-		return
-	}
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.cfg.ErrorControl = *body.Value
-	h.cfg.SanitizeErrorControl()
-	h.persistLocked(c)
-}
-
-// Provider cooldown
-func (h *Handler) GetProviderCooldown(c *gin.Context) {
-	c.JSON(200, gin.H{"provider-cooldown": h.cfg.ProviderCooldown})
-}
-func (h *Handler) PutProviderCooldown(c *gin.Context) {
-	var body struct {
-		Value *config.ProviderCooldownConfig `json:"value"`
-	}
-	if err := c.ShouldBindJSON(&body); err != nil || body.Value == nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
-		return
-	}
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if h.cfg == nil {
-		h.cfg = &config.Config{}
-	}
-	h.cfg.ProviderCooldown = *body.Value
-	h.cfg.SanitizeProviderCooldown()
-	h.persistLocked(c)
+func (h *Handler) PutCodexRemoveEmptyInputName(c *gin.Context) {
+	h.updateBoolField(c, func(v bool) { h.cfg.CodexRemoveEmptyInputName = v })
 }
 
 // ForceModelPrefix
@@ -345,21 +312,13 @@ func (h *Handler) PutForceModelPrefix(c *gin.Context) {
 	h.updateBoolField(c, func(v bool) { h.cfg.ForceModelPrefix = v })
 }
 
-// CodexRemoveEmptyInputName
-func (h *Handler) GetCodexRemoveEmptyInputName(c *gin.Context) {
-	c.JSON(200, gin.H{"codex-remove-empty-input-name": h.cfg.CodexRemoveEmptyInputName})
-}
-func (h *Handler) PutCodexRemoveEmptyInputName(c *gin.Context) {
-	h.updateBoolField(c, func(v bool) { h.cfg.CodexRemoveEmptyInputName = v })
-}
-
 func normalizeRoutingStrategy(strategy string) (string, bool) {
 	normalized := strings.ToLower(strings.TrimSpace(strategy))
 	switch normalized {
-	case "", "random":
-		return "random", true
-	case "last-success":
-		return "last-success", true
+	case "", "round-robin":
+		return "round-robin", true
+	case "fill-first":
+		return "fill-first", true
 	default:
 		return "", false
 	}

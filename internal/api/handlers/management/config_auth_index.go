@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/watcher/synthesizer"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher/synthesizer"
 )
 
 type geminiKeyWithAuthIndex struct {
@@ -34,14 +34,16 @@ type openAICompatibilityAPIKeyWithAuthIndex struct {
 }
 
 type openAICompatibilityWithAuthIndex struct {
-	Name          string                                   `json:"name"`
-	Priority      int                                      `json:"priority,omitempty"`
-	Prefix        string                                   `json:"prefix,omitempty"`
-	BaseURL       string                                   `json:"base-url"`
-	APIKeyEntries []openAICompatibilityAPIKeyWithAuthIndex `json:"api-key-entries,omitempty"`
-	Models        []config.OpenAICompatibilityModel        `json:"models,omitempty"`
-	Headers       map[string]string                        `json:"headers,omitempty"`
-	AuthIndex     string                                   `json:"auth-index,omitempty"`
+	Name           string                                   `json:"name"`
+	Priority       int                                      `json:"priority,omitempty"`
+	Disabled       bool                                     `json:"disabled"`
+	Prefix         string                                   `json:"prefix,omitempty"`
+	BaseURL        string                                   `json:"base-url"`
+	APIKeyEntries  []openAICompatibilityAPIKeyWithAuthIndex `json:"api-key-entries,omitempty"`
+	Models         []config.OpenAICompatibilityModel        `json:"models,omitempty"`
+	Headers        map[string]string                        `json:"headers,omitempty"`
+	DisableCooling bool                                     `json:"disable-cooling,omitempty"`
+	AuthIndex      string                                   `json:"auth-index,omitempty"`
 }
 
 func (h *Handler) liveAuthIndexByID() map[string]string {
@@ -87,7 +89,6 @@ func (h *Handler) geminiKeysWithAuthIndex() []geminiKeyWithAuthIndex {
 	if h.cfg == nil {
 		return nil
 	}
-	h.cfg.ApplyRoutingDefaults()
 
 	idGen := synthesizer.NewStableIDGenerator()
 	out := make([]geminiKeyWithAuthIndex, len(h.cfg.GeminiKey))
@@ -117,7 +118,6 @@ func (h *Handler) claudeKeysWithAuthIndex() []claudeKeyWithAuthIndex {
 	if h.cfg == nil {
 		return nil
 	}
-	h.cfg.ApplyRoutingDefaults()
 
 	idGen := synthesizer.NewStableIDGenerator()
 	out := make([]claudeKeyWithAuthIndex, len(h.cfg.ClaudeKey))
@@ -147,7 +147,6 @@ func (h *Handler) codexKeysWithAuthIndex() []codexKeyWithAuthIndex {
 	if h.cfg == nil {
 		return nil
 	}
-	h.cfg.ApplyRoutingDefaults()
 
 	idGen := synthesizer.NewStableIDGenerator()
 	out := make([]codexKeyWithAuthIndex, len(h.cfg.CodexKey))
@@ -177,7 +176,6 @@ func (h *Handler) vertexCompatKeysWithAuthIndex() []vertexCompatKeyWithAuthIndex
 	if h.cfg == nil {
 		return nil
 	}
-	h.cfg.ApplyRoutingDefaults()
 
 	idGen := synthesizer.NewStableIDGenerator()
 	out := make([]vertexCompatKeyWithAuthIndex, len(h.cfg.VertexCompatAPIKey))
@@ -204,7 +202,6 @@ func (h *Handler) openAICompatibilityWithAuthIndex() []openAICompatibilityWithAu
 	if h.cfg == nil {
 		return nil
 	}
-	h.cfg.ApplyRoutingDefaults()
 
 	normalized := normalizedOpenAICompatibilityEntries(h.cfg.OpenAICompatibility)
 	out := make([]openAICompatibilityWithAuthIndex, len(normalized))
@@ -218,13 +215,15 @@ func (h *Handler) openAICompatibilityWithAuthIndex() []openAICompatibilityWithAu
 		idKind := fmt.Sprintf("openai-compatibility:%s", providerName)
 
 		response := openAICompatibilityWithAuthIndex{
-			Name:      entry.Name,
-			Priority:  config.EffectivePriority(entry.Priority),
-			Prefix:    entry.Prefix,
-			BaseURL:   entry.BaseURL,
-			Models:    entry.Models,
-			Headers:   entry.Headers,
-			AuthIndex: "",
+			Name:           entry.Name,
+			Priority:       entry.Priority,
+			Disabled:       entry.Disabled,
+			Prefix:         entry.Prefix,
+			BaseURL:        entry.BaseURL,
+			Models:         entry.Models,
+			Headers:        entry.Headers,
+			DisableCooling: entry.DisableCooling,
+			AuthIndex:      "",
 		}
 		if len(entry.APIKeyEntries) == 0 {
 			id, _ := idGen.Next(idKind, entry.BaseURL)

@@ -14,8 +14,8 @@ type VertexCompatKey struct {
 	APIKey string `yaml:"api-key" json:"api-key"`
 
 	// Priority controls selection preference when multiple credentials match.
-	// Higher values are preferred; defaults to 10.
-	Priority *int `yaml:"priority,omitempty" json:"priority,omitempty"`
+	// Higher values are preferred; defaults to 0.
+	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
 
 	// Prefix optionally namespaces model aliases for this credential (e.g., "teamA/vertex-pro").
 	Prefix string `yaml:"prefix,omitempty" json:"prefix,omitempty"`
@@ -27,18 +27,6 @@ type VertexCompatKey struct {
 
 	// ProxyURL optionally overrides the global proxy for this API key.
 	ProxyURL string `yaml:"proxy-url,omitempty" json:"proxy-url,omitempty"`
-
-	// BackoffMode controls how cooldown/backoff applies to this credential.
-	BackoffMode string `yaml:"backoff-mode,omitempty" json:"backoff-mode,omitempty"`
-
-	// RequestRetry overrides the retry count when BackoffMode is custom.
-	RequestRetry *int `yaml:"request-retry,omitempty" json:"request-retry,omitempty"`
-
-	// ErrorControl overrides provider retry behavior for this credential.
-	ErrorControl ErrorControlPolicy `yaml:"error-control,omitempty" json:"error-control,omitempty"`
-
-	// Cooldown overrides count-based failure cooldown for this credential.
-	Cooldown ProviderCooldownConfig `yaml:"cooldown,omitempty" json:"cooldown,omitempty"`
 
 	// Headers optionally adds extra HTTP headers for requests sent with this key.
 	// Commonly used for cookies, user-agent, and other authentication headers.
@@ -62,10 +50,14 @@ type VertexCompatModel struct {
 
 	// Alias is the model name alias that clients will use to reference this model.
 	Alias string `yaml:"alias" json:"alias"`
+
+	// ForceMapping rewrites upstream response model fields back to Alias.
+	ForceMapping bool `yaml:"force-mapping,omitempty" json:"force-mapping,omitempty"`
 }
 
-func (m VertexCompatModel) GetName() string  { return m.Name }
-func (m VertexCompatModel) GetAlias() string { return m.Alias }
+func (m VertexCompatModel) GetName() string       { return m.Name }
+func (m VertexCompatModel) GetAlias() string      { return m.Alias }
+func (m VertexCompatModel) GetForceMapping() bool { return m.ForceMapping }
 
 // SanitizeVertexCompatKeys deduplicates and normalizes Vertex-compatible API key credentials.
 func (cfg *Config) SanitizeVertexCompatKeys() {
@@ -86,7 +78,6 @@ func (cfg *Config) SanitizeVertexCompatKeys() {
 		entry.ProxyURL = strings.TrimSpace(entry.ProxyURL)
 		entry.Headers = NormalizeHeaders(entry.Headers)
 		entry.ExcludedModels = NormalizeExcludedModels(entry.ExcludedModels)
-		entry.Cooldown = sanitizeProviderCooldownConfig(entry.Cooldown)
 
 		// Sanitize models: remove entries without valid alias
 		sanitizedModels := make([]VertexCompatModel, 0, len(entry.Models))

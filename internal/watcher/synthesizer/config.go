@@ -5,9 +5,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/watcher/diff"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher/diff"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
 
 // ConfigSynthesizer generates Auth entries from configuration API keys.
@@ -17,102 +17,6 @@ type ConfigSynthesizer struct{}
 // NewConfigSynthesizer creates a new ConfigSynthesizer instance.
 func NewConfigSynthesizer() *ConfigSynthesizer {
 	return &ConfigSynthesizer{}
-}
-
-func normalizeBackoffMode(raw string) string {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "off":
-		return "off"
-	case "custom":
-		return "custom"
-	default:
-		return "default"
-	}
-}
-
-func buildBackoffMetadata(mode string, requestRetry *int, errorControl config.ErrorControlPolicy, cooldown config.ProviderCooldownConfig) map[string]any {
-	metadata := map[string]any{
-		"backoff_mode": normalizeBackoffMode(mode),
-	}
-	if requestRetry != nil {
-		retry := *requestRetry
-		if retry < 0 {
-			retry = 0
-		}
-		metadata["request_retry"] = retry
-	}
-	if errorControl.RetryRounds != nil {
-		rounds := *errorControl.RetryRounds
-		if rounds < 1 {
-			rounds = 1
-		}
-		metadata["retry_rounds"] = rounds
-	}
-	if errorControl.RoundBackoffBase != nil {
-		v := *errorControl.RoundBackoffBase
-		if v <= 0 {
-			v = 1
-		}
-		metadata["round_backoff_base"] = v
-	}
-	if errorControl.RoundBackoffExponent != nil {
-		v := *errorControl.RoundBackoffExponent
-		if v <= 0 {
-			v = 2
-		}
-		metadata["round_backoff_exponent"] = v
-	}
-	if errorControl.RoundBackoffMax != nil {
-		v := *errorControl.RoundBackoffMax
-		if v <= 0 {
-			v = 60
-		}
-		metadata["round_backoff_max"] = v
-	}
-	if cooldown.Start != nil {
-		v := *cooldown.Start
-		if v < 1 {
-			v = config.DefaultProviderCooldownStart
-		}
-		metadata["cooldown_start"] = v
-	}
-	if cooldown.Exponent != nil {
-		v := *cooldown.Exponent
-		if v <= 0 {
-			v = config.DefaultProviderCooldownExponent
-		}
-		metadata["cooldown_exponent"] = v
-	}
-	if cooldown.Max != nil {
-		v := *cooldown.Max
-		if v < 1 {
-			v = config.DefaultProviderCooldownMax
-		}
-		metadata["cooldown_max"] = v
-	}
-	return metadata
-}
-
-func applyDefaultProviderRoutingAttrs(attrs map[string]string, priority *int) {
-	if attrs == nil {
-		return
-	}
-	attrs["priority"] = strconv.Itoa(config.EffectivePriority(priority))
-	attrs["group_priority"] = strconv.Itoa(config.DefaultRoutingPriority)
-	attrs["group_enabled"] = "true"
-}
-
-func applyConfigDisplayAttrs(attrs map[string]string, provider string, index int) {
-	if attrs == nil {
-		return
-	}
-	provider = strings.TrimSpace(strings.ToLower(provider))
-	if provider == "" {
-		provider = "provider"
-	}
-	attrs["config_provider"] = provider
-	attrs["config_index"] = strconv.Itoa(index)
-	attrs["display_source"] = fmt.Sprintf("%s#%d", provider, index)
 }
 
 // Synthesize generates Auth entries from config API keys.
@@ -157,8 +61,13 @@ func (s *ConfigSynthesizer) synthesizeGeminiKeys(ctx *SynthesisContext) []*corea
 			"source":  fmt.Sprintf("config:gemini[%s]", token),
 			"api_key": key,
 		}
-		applyDefaultProviderRoutingAttrs(attrs, entry.Priority)
-		applyConfigDisplayAttrs(attrs, "gemini", i)
+		metadata := map[string]any{}
+		if entry.DisableCooling {
+			metadata["disable_cooling"] = true
+		}
+		if entry.Priority != 0 {
+			attrs["priority"] = strconv.Itoa(entry.Priority)
+		}
 		if base != "" {
 			attrs["base_url"] = base
 		}
@@ -174,11 +83,14 @@ func (s *ConfigSynthesizer) synthesizeGeminiKeys(ctx *SynthesisContext) []*corea
 			Status:     coreauth.StatusActive,
 			ProxyURL:   proxyURL,
 			Attributes: attrs,
-			Metadata:   buildBackoffMetadata(entry.BackoffMode, entry.RequestRetry, entry.ErrorControl, entry.Cooldown),
+			Metadata:   metadata,
 			CreatedAt:  now,
 			UpdatedAt:  now,
 		}
 		ApplyAuthExcludedModelsMeta(a, cfg, entry.ExcludedModels, "apikey")
+		if len(a.Metadata) == 0 {
+			a.Metadata = nil
+		}
 		out = append(out, a)
 	}
 	return out
@@ -204,13 +116,21 @@ func (s *ConfigSynthesizer) synthesizeClaudeKeys(ctx *SynthesisContext) []*corea
 			"source":  fmt.Sprintf("config:claude[%s]", token),
 			"api_key": key,
 		}
-		applyDefaultProviderRoutingAttrs(attrs, ck.Priority)
-		applyConfigDisplayAttrs(attrs, "claude", i)
+		metadata := map[string]any{}
+		if ck.DisableCooling {
+			metadata["disable_cooling"] = true
+		}
+		if ck.Priority != 0 {
+			attrs["priority"] = strconv.Itoa(ck.Priority)
+		}
 		if base != "" {
 			attrs["base_url"] = base
 		}
 		if authMode := normalizeClaudeAuthMode(ck.AuthMode); authMode != "" {
 			attrs["auth_mode"] = authMode
+		}
+		if ck.RebuildMidSystemMessage {
+			attrs["rebuild_mid_system_message"] = "true"
 		}
 		if hash := diff.ComputeClaudeModelsHash(ck.Models); hash != "" {
 			attrs["models_hash"] = hash
@@ -225,27 +145,17 @@ func (s *ConfigSynthesizer) synthesizeClaudeKeys(ctx *SynthesisContext) []*corea
 			Status:     coreauth.StatusActive,
 			ProxyURL:   proxyURL,
 			Attributes: attrs,
-			Metadata:   buildBackoffMetadata(ck.BackoffMode, ck.RequestRetry, ck.ErrorControl, ck.Cooldown),
+			Metadata:   metadata,
 			CreatedAt:  now,
 			UpdatedAt:  now,
 		}
 		ApplyAuthExcludedModelsMeta(a, cfg, ck.ExcludedModels, "apikey")
+		if len(a.Metadata) == 0 {
+			a.Metadata = nil
+		}
 		out = append(out, a)
 	}
 	return out
-}
-
-func normalizeClaudeAuthMode(mode string) string {
-	switch strings.ToLower(strings.TrimSpace(mode)) {
-	case "", "auto", "default":
-		return ""
-	case "api-key", "api_key", "apikey", "x-api-key", "x_api_key":
-		return "api-key"
-	case "bearer", "oauth", "authorization", "authorization-bearer":
-		return "bearer"
-	default:
-		return ""
-	}
 }
 
 // synthesizeCodexKeys creates Auth entries for Codex API keys.
@@ -267,8 +177,13 @@ func (s *ConfigSynthesizer) synthesizeCodexKeys(ctx *SynthesisContext) []*coreau
 			"source":  fmt.Sprintf("config:codex[%s]", token),
 			"api_key": key,
 		}
-		applyDefaultProviderRoutingAttrs(attrs, ck.Priority)
-		applyConfigDisplayAttrs(attrs, "codex", i)
+		metadata := map[string]any{}
+		if ck.DisableCooling {
+			metadata["disable_cooling"] = true
+		}
+		if ck.Priority != 0 {
+			attrs["priority"] = strconv.Itoa(ck.Priority)
+		}
 		if ck.BaseURL != "" {
 			attrs["base_url"] = ck.BaseURL
 		}
@@ -293,11 +208,14 @@ func (s *ConfigSynthesizer) synthesizeCodexKeys(ctx *SynthesisContext) []*coreau
 			Status:     coreauth.StatusActive,
 			ProxyURL:   proxyURL,
 			Attributes: attrs,
-			Metadata:   buildBackoffMetadata(ck.BackoffMode, ck.RequestRetry, ck.ErrorControl, ck.Cooldown),
+			Metadata:   metadata,
 			CreatedAt:  now,
 			UpdatedAt:  now,
 		}
 		ApplyAuthExcludedModelsMeta(a, cfg, ck.ExcludedModels, "apikey")
+		if len(a.Metadata) == 0 {
+			a.Metadata = nil
+		}
 		out = append(out, a)
 	}
 	return out
@@ -312,13 +230,19 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 	out := make([]*coreauth.Auth, 0)
 	for i := range cfg.OpenAICompatibility {
 		compat := &cfg.OpenAICompatibility[i]
+		if compat.Disabled {
+			continue
+		}
 		prefix := strings.TrimSpace(compat.Prefix)
 		providerName := strings.ToLower(strings.TrimSpace(compat.Name))
 		if providerName == "" {
 			providerName = "openai-compatibility"
 		}
+		internalProviderKey := util.OpenAICompatibleProviderKey(providerName)
 		base := strings.TrimSpace(compat.BaseURL)
+		disableCooling := compat.DisableCooling
 
+		// Handle new APIKeyEntries format (preferred)
 		createdEntries := 0
 		for j := range compat.APIKeyEntries {
 			entry := &compat.APIKeyEntries[j]
@@ -330,10 +254,15 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 				"source":       fmt.Sprintf("config:%s[%s]", providerName, token),
 				"base_url":     base,
 				"compat_name":  compat.Name,
-				"provider_key": providerName,
+				"provider_key": internalProviderKey,
 			}
-			applyDefaultProviderRoutingAttrs(attrs, compat.Priority)
-			applyConfigDisplayAttrs(attrs, providerName, i)
+			metadata := map[string]any{}
+			if disableCooling {
+				metadata["disable_cooling"] = true
+			}
+			if compat.Priority != 0 {
+				attrs["priority"] = strconv.Itoa(compat.Priority)
+			}
 			if key != "" {
 				attrs["api_key"] = key
 			}
@@ -343,19 +272,23 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 			addConfigHeadersToAttrs(compat.Headers, attrs)
 			a := &coreauth.Auth{
 				ID:         id,
-				Provider:   providerName,
+				Provider:   internalProviderKey,
 				Label:      compat.Name,
 				Prefix:     prefix,
 				Status:     coreauth.StatusActive,
 				ProxyURL:   proxyURL,
 				Attributes: attrs,
-				Metadata:   buildBackoffMetadata(compat.BackoffMode, compat.RequestRetry, compat.ErrorControl, compat.Cooldown),
+				Metadata:   metadata,
 				CreatedAt:  now,
 				UpdatedAt:  now,
+			}
+			if len(a.Metadata) == 0 {
+				a.Metadata = nil
 			}
 			out = append(out, a)
 			createdEntries++
 		}
+		// Fallback: create entry without API key if no APIKeyEntries
 		if createdEntries == 0 {
 			idKind := fmt.Sprintf("openai-compatibility:%s", providerName)
 			id, token := idGen.Next(idKind, base)
@@ -363,24 +296,32 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 				"source":       fmt.Sprintf("config:%s[%s]", providerName, token),
 				"base_url":     base,
 				"compat_name":  compat.Name,
-				"provider_key": providerName,
+				"provider_key": internalProviderKey,
 			}
-			applyDefaultProviderRoutingAttrs(attrs, compat.Priority)
-			applyConfigDisplayAttrs(attrs, providerName, i)
+			metadata := map[string]any{}
+			if disableCooling {
+				metadata["disable_cooling"] = true
+			}
+			if compat.Priority != 0 {
+				attrs["priority"] = strconv.Itoa(compat.Priority)
+			}
 			if hash := diff.ComputeOpenAICompatModelsHash(compat.Models); hash != "" {
 				attrs["models_hash"] = hash
 			}
 			addConfigHeadersToAttrs(compat.Headers, attrs)
 			a := &coreauth.Auth{
 				ID:         id,
-				Provider:   providerName,
+				Provider:   internalProviderKey,
 				Label:      compat.Name,
 				Prefix:     prefix,
 				Status:     coreauth.StatusActive,
 				Attributes: attrs,
-				Metadata:   buildBackoffMetadata(compat.BackoffMode, compat.RequestRetry, compat.ErrorControl, compat.Cooldown),
+				Metadata:   metadata,
 				CreatedAt:  now,
 				UpdatedAt:  now,
+			}
+			if len(a.Metadata) == 0 {
+				a.Metadata = nil
 			}
 			out = append(out, a)
 		}
@@ -399,6 +340,7 @@ func (s *ConfigSynthesizer) synthesizeVertexCompat(ctx *SynthesisContext) []*cor
 		compat := &cfg.VertexCompatAPIKey[i]
 		providerName := "vertex"
 		base := strings.TrimSpace(compat.BaseURL)
+
 		key := strings.TrimSpace(compat.APIKey)
 		prefix := strings.TrimSpace(compat.Prefix)
 		proxyURL := strings.TrimSpace(compat.ProxyURL)
@@ -409,8 +351,9 @@ func (s *ConfigSynthesizer) synthesizeVertexCompat(ctx *SynthesisContext) []*cor
 			"base_url":     base,
 			"provider_key": providerName,
 		}
-		applyDefaultProviderRoutingAttrs(attrs, compat.Priority)
-		applyConfigDisplayAttrs(attrs, providerName, i)
+		if compat.Priority != 0 {
+			attrs["priority"] = strconv.Itoa(compat.Priority)
+		}
 		if key != "" {
 			attrs["api_key"] = key
 		}
@@ -426,7 +369,6 @@ func (s *ConfigSynthesizer) synthesizeVertexCompat(ctx *SynthesisContext) []*cor
 			Status:     coreauth.StatusActive,
 			ProxyURL:   proxyURL,
 			Attributes: attrs,
-			Metadata:   buildBackoffMetadata(compat.BackoffMode, compat.RequestRetry, compat.ErrorControl, compat.Cooldown),
 			CreatedAt:  now,
 			UpdatedAt:  now,
 		}
@@ -434,4 +376,18 @@ func (s *ConfigSynthesizer) synthesizeVertexCompat(ctx *SynthesisContext) []*cor
 		out = append(out, a)
 	}
 	return out
+}
+
+// normalizeClaudeAuthMode maps configured auth-mode values onto canonical attribute values.
+func normalizeClaudeAuthMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "", "auto", "default":
+		return ""
+	case "api-key", "api_key", "apikey", "x-api-key", "x_api_key":
+		return "api-key"
+	case "bearer", "oauth", "authorization", "authorization-bearer":
+		return "bearer"
+	default:
+		return ""
+	}
 }

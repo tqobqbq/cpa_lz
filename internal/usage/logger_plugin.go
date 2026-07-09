@@ -6,7 +6,7 @@ package usage
 import (
 	"context"
 	"fmt"
-	"math"
+	"net/http"
 	"sort"
 	"strings"
 	"sync"
@@ -15,7 +15,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
-	coreusage "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/usage"
+	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 )
 
 var statisticsEnabled atomic.Bool
@@ -63,7 +63,6 @@ func (p *LoggerPlugin) HandleUsage(ctx context.Context, record coreusage.Record)
 		return
 	}
 	p.stats.Record(ctx, record)
-	enqueueUsageQueueRecord(ctx, record)
 }
 
 // SetStatisticsEnabled toggles whether in-memory statistics are recorded.
@@ -121,23 +120,17 @@ type modelStats struct {
 
 // RequestDetail stores the timestamp, latency, and token usage for a single request.
 type RequestDetail struct {
-	Timestamp                    time.Time  `json:"timestamp"`
-	LatencyMs                    int64      `json:"latency_ms"`
-	Source                       string     `json:"source"`
-	UpstreamModel                string     `json:"upstream_model,omitempty"`
-	UserAgent                    string     `json:"user_agent,omitempty"`
-	InputChars                   int64      `json:"input_chars,omitempty"`
-	StatusCode                   int        `json:"status_code,omitempty"`
-	ErrorReason                  string     `json:"error_reason,omitempty"`
-	ErrorMessage                 string     `json:"error_message,omitempty"`
-	RequestCount                 uint64     `json:"request_count,omitempty"`
-	RetryRound                   int        `json:"retry_round,omitempty"`
-	RoundDispatchIndex           int        `json:"round_dispatch_index,omitempty"`
-	ParallelEligible             bool       `json:"parallel_eligible"`
-	ProviderCooldownRemaining    int        `json:"provider_cooldown_remaining,omitempty"`
-	ProviderCooldownGeneratedRaw float64    `json:"provider_cooldown_generated_raw,omitempty"`
-	Tokens                       TokenStats `json:"tokens"`
-	Failed                       bool       `json:"failed"`
+	Timestamp     time.Time  `json:"timestamp"`
+	LatencyMs     int64      `json:"latency_ms"`
+	Source        string     `json:"source"`
+	UpstreamModel string     `json:"upstream_model,omitempty"`
+	UserAgent     string     `json:"user_agent,omitempty"`
+	InputChars    int64      `json:"input_chars,omitempty"`
+	StatusCode    int        `json:"status_code,omitempty"`
+	ErrorReason   string     `json:"error_reason,omitempty"`
+	ErrorMessage  string     `json:"error_message,omitempty"`
+	Tokens        TokenStats `json:"tokens"`
+	Failed        bool       `json:"failed"`
 }
 
 // TokenStats captures the token usage breakdown for a request.
@@ -256,7 +249,27 @@ func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record)
 		failed = !resolveSuccess(ctx)
 	}
 	success := !failed
-	modelName := normaliseUsageDimension(record.Model, "unknown")
+	requestedModel := strings.TrimSpace(record.Alias)
+	if requestedModel == "" {
+		requestedModel = record.Model
+	}
+	modelName := normaliseUsageDimension(requestedModel, "unknown")
+	upstreamModel := strings.TrimSpace(record.Model)
+	if upstreamModel == requestedModel {
+		upstreamModel = ""
+	}
+	statusCode := 0
+	errorReason := ""
+	errorMessage := ""
+	if failed {
+		statusCode = normaliseStatusCode(record.Fail.StatusCode)
+		errorMessage = capUsageStoredString(strings.TrimSpace(record.Fail.Body))
+		if statusCode > 0 {
+			errorReason = http.StatusText(statusCode)
+		}
+	} else {
+		statusCode = resolveDownstreamStatus(ctx)
+	}
 	dayKey := timestamp.Format("2006-01-02")
 	hourKey := timestamp.Hour()
 
@@ -279,25 +292,19 @@ func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record)
 		stats.Models = make(map[string]*modelStats)
 	}
 	s.updateAPIStats(stats, modelName, RequestDetail{
-		Timestamp:                    timestamp,
-		LatencyMs:                    normaliseLatency(record.Latency),
-		Source:                       record.Source,
-		UpstreamModel:                record.UpstreamModel,
-		UserAgent:                    record.UserAgent,
-		InputChars:                   normaliseInputChars(record.InputChars),
-		StatusCode:                   normaliseStatusCode(record.StatusCode),
-		ErrorReason:                  record.ErrorReason,
-		ErrorMessage:                 record.ErrorMessage,
-		RequestCount:                 record.RequestCount,
-		RetryRound:                   record.RetryRound,
-		RoundDispatchIndex:           record.RoundDispatchIndex,
-		ParallelEligible:             record.ParallelEligible,
-		ProviderCooldownRemaining:    record.ProviderCooldownRemaining,
-		ProviderCooldownGeneratedRaw: record.ProviderCooldownGeneratedRaw,
-		Tokens:                       detail,
-		Failed:                       failed,
+		Timestamp:     timestamp,
+		LatencyMs:     normaliseLatency(record.Latency),
+		Source:        record.Source,
+		UpstreamModel: upstreamModel,
+		UserAgent:     resolveUserAgent(ctx),
+		InputChars:    normaliseInputChars(resolveInputChars(ctx)),
+		StatusCode:    statusCode,
+		ErrorReason:   errorReason,
+		ErrorMessage:  errorMessage,
+		Tokens:        detail,
+		Failed:        failed,
 	}, timestamp)
-	if userAgent := capUsageStoredString(record.UserAgent); userAgent != "" {
+	if userAgent := capUsageStoredString(resolveUserAgent(ctx)); userAgent != "" {
 		addBoundedUsageSetValue(s.userAgents, userAgent, maxUsageUserAgents)
 	}
 	if source := boundedUsageStatsKey(s.sourceStats, record.Source, maxUsageSources); source != "" {
@@ -476,18 +483,6 @@ func normaliseRequestDetail(detail RequestDetail) RequestDetail {
 	detail.StatusCode = normaliseStatusCode(detail.StatusCode)
 	if detail.LatencyMs < 0 {
 		detail.LatencyMs = 0
-	}
-	if detail.RetryRound < 0 {
-		detail.RetryRound = 0
-	}
-	if detail.RoundDispatchIndex < 0 {
-		detail.RoundDispatchIndex = 0
-	}
-	if detail.ProviderCooldownRemaining < 0 {
-		detail.ProviderCooldownRemaining = 0
-	}
-	if detail.ProviderCooldownGeneratedRaw < 0 || math.IsNaN(detail.ProviderCooldownGeneratedRaw) || math.IsInf(detail.ProviderCooldownGeneratedRaw, 0) {
-		detail.ProviderCooldownGeneratedRaw = 0
 	}
 	detail.Tokens = normaliseTokenStats(detail.Tokens)
 	return detail
@@ -1052,7 +1047,7 @@ func dedupKey(apiName, modelName string, detail RequestDetail) string {
 	timestamp := detail.Timestamp.UTC().Format(time.RFC3339Nano)
 	tokens := normaliseTokenStats(detail.Tokens)
 	return fmt.Sprintf(
-		"%s|%s|%s|%s|%s|%s|%d|%d|%s|%s|%d|%d|%d|%t|%d|%.6f|%t|%d|%d|%d|%d|%d|%d|%d|%d|%d",
+		"%s|%s|%s|%s|%s|%s|%d|%d|%s|%s|%t|%d|%d|%d|%d|%d|%d|%d",
 		apiName,
 		modelName,
 		timestamp,
@@ -1063,20 +1058,12 @@ func dedupKey(apiName, modelName string, detail RequestDetail) string {
 		normaliseStatusCode(detail.StatusCode),
 		strings.TrimSpace(detail.ErrorReason),
 		strings.TrimSpace(detail.ErrorMessage),
-		detail.RequestCount,
-		detail.RetryRound,
-		detail.RoundDispatchIndex,
-		detail.ParallelEligible,
-		detail.ProviderCooldownRemaining,
-		detail.ProviderCooldownGeneratedRaw,
 		detail.Failed,
 		tokens.InputTokens,
 		tokens.OutputTokens,
 		tokens.ReasoningTokens,
 		tokens.CachedTokens,
 		tokens.CacheCreationInputTokens,
-		tokens.CacheCreation5mInputTokens,
-		tokens.CacheCreation1hInputTokens,
 		tokens.CacheReadInputTokens,
 		tokens.TotalTokens,
 	)
@@ -1124,20 +1111,54 @@ func resolveSuccess(ctx context.Context) bool {
 
 const httpStatusBadRequest = 400
 
+func resolveUserAgent(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	ginCtx, ok := ctx.Value("gin").(*gin.Context)
+	if !ok || ginCtx == nil || ginCtx.Request == nil {
+		return ""
+	}
+	return strings.TrimSpace(ginCtx.Request.UserAgent())
+}
+
+func resolveInputChars(ctx context.Context) int64 {
+	if ctx == nil {
+		return 0
+	}
+	ginCtx, ok := ctx.Value("gin").(*gin.Context)
+	if !ok || ginCtx == nil || ginCtx.Request == nil {
+		return 0
+	}
+	if ginCtx.Request.ContentLength > 0 {
+		return ginCtx.Request.ContentLength
+	}
+	return 0
+}
+
+func resolveDownstreamStatus(ctx context.Context) int {
+	if ctx == nil {
+		return 0
+	}
+	ginCtx, ok := ctx.Value("gin").(*gin.Context)
+	if !ok || ginCtx == nil || ginCtx.Writer == nil {
+		return 0
+	}
+	return normaliseStatusCode(ginCtx.Writer.Status())
+}
+
 func normaliseDetail(detail coreusage.Detail) TokenStats {
 	tokens := TokenStats{
-		InputTokens:                detail.InputTokens,
-		OutputTokens:               detail.OutputTokens,
-		ReasoningTokens:            detail.ReasoningTokens,
-		CachedTokens:               detail.CachedTokens,
-		CacheCreationInputTokens:   detail.CacheCreationInputTokens,
-		CacheCreation5mInputTokens: detail.CacheCreation5mInputTokens,
-		CacheCreation1hInputTokens: detail.CacheCreation1hInputTokens,
-		CacheReadInputTokens:       detail.CacheReadInputTokens,
-		TotalTokens:                detail.TotalTokens,
+		InputTokens:              detail.InputTokens,
+		OutputTokens:             detail.OutputTokens,
+		ReasoningTokens:          detail.ReasoningTokens,
+		CachedTokens:             detail.CachedTokens,
+		CacheCreationInputTokens: detail.CacheCreationTokens,
+		CacheReadInputTokens:     detail.CacheReadTokens,
+		TotalTokens:              detail.TotalTokens,
 	}
 	if tokens.TotalTokens == 0 {
-		tokens.TotalTokens = detail.InputTokens + detail.OutputTokens + detail.CacheCreationInputTokens + detail.CacheReadInputTokens
+		tokens.TotalTokens = detail.InputTokens + detail.OutputTokens + detail.CacheCreationTokens + detail.CacheReadTokens
 	}
 	if tokens.TotalTokens == 0 {
 		tokens.TotalTokens = detail.InputTokens + detail.OutputTokens + detail.CachedTokens

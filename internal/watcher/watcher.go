@@ -12,12 +12,13 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher/synthesizer"
 	"gopkg.in/yaml.v3"
 
-	sdkAuth "github.com/router-for-me/CLIProxyAPI/v6/sdk/auth"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -37,6 +38,7 @@ type Watcher struct {
 	authDir           string
 	config            *config.Config
 	clientsMutex      sync.RWMutex
+	authRescanMu      sync.Mutex
 	configReloadMu    sync.Mutex
 	configReloadTimer *time.Timer
 	serverUpdateMu    sync.Mutex
@@ -60,6 +62,7 @@ type Watcher struct {
 	pendingOrder      []string
 	dispatchCancel    context.CancelFunc
 	storePersister    storePersister
+	pluginAuthParser  synthesizer.PluginAuthParser
 	mirroredAuthDir   string
 	authDirWatched    bool
 	oldConfigYaml     []byte
@@ -150,32 +153,13 @@ func (w *Watcher) SetConfig(cfg *config.Config) {
 		}
 	}
 	w.clientsMutex.Lock()
+	defer w.clientsMutex.Unlock()
 	w.config = cfg
 	w.oldConfigYaml, _ = yaml.Marshal(cfg)
-	w.clientsMutex.Unlock()
 }
 
-// SetAuthUpdateQueue sets the queue used to emit auth updates.
-func (w *Watcher) SetAuthUpdateQueue(queue chan<- AuthUpdate) {
-	w.setAuthUpdateQueue(queue)
-}
-
-// DispatchRuntimeAuthUpdate allows external runtime providers (e.g., websocket-driven auths)
-// to push auth updates through the same queue used by file/config watchers.
-// Returns true if the update was enqueued; false if no queue is configured.
-func (w *Watcher) DispatchRuntimeAuthUpdate(update AuthUpdate) bool {
-	return w.dispatchRuntimeAuthUpdate(update)
-}
-
-// SnapshotCoreAuths converts current clients snapshot into core auth entries.
-func (w *Watcher) SnapshotCoreAuths() []*coreauth.Auth {
-	w.clientsMutex.RLock()
-	cfg := w.config
-	authDir := w.authDir
-	w.clientsMutex.RUnlock()
-	return snapshotCoreAuths(cfg, authDir)
-}
-
+// resolveAuthDir determines the effective auth directory for the given config,
+// preferring the store-mirrored directory when one is locked in.
 func (w *Watcher) resolveAuthDir(cfg *config.Config) (string, error) {
 	if cfg == nil {
 		return "", nil
@@ -193,6 +177,7 @@ func (w *Watcher) resolveAuthDir(cfg *config.Config) (string, error) {
 	return filepath.Clean(strings.TrimSpace(resolvedAuthDir)), nil
 }
 
+// switchAuthDir re-targets the fs watcher when the auth directory changes at runtime.
 func (w *Watcher) switchAuthDir(nextAuthDir string) error {
 	nextAuthDir = filepath.Clean(strings.TrimSpace(nextAuthDir))
 	if nextAuthDir == "" {
@@ -224,4 +209,39 @@ func (w *Watcher) switchAuthDir(nextAuthDir string) error {
 	w.authDir = nextAuthDir
 	w.clientsMutex.Unlock()
 	return nil
+}
+
+// SetPluginAuthParser updates the plugin auth parser used for file auth synthesis.
+func (w *Watcher) SetPluginAuthParser(parser synthesizer.PluginAuthParser) {
+	w.clientsMutex.Lock()
+	defer w.clientsMutex.Unlock()
+	w.pluginAuthParser = parser
+}
+
+// SetAuthUpdateQueue sets the queue used to emit auth updates.
+func (w *Watcher) SetAuthUpdateQueue(queue chan<- AuthUpdate) {
+	w.setAuthUpdateQueue(queue)
+}
+
+// DispatchRuntimeAuthUpdate allows external runtime providers (e.g., websocket-driven auths)
+// to push auth updates through the same queue used by file/config watchers.
+// Returns true if the update was enqueued; false if no queue is configured.
+func (w *Watcher) DispatchRuntimeAuthUpdate(update AuthUpdate) bool {
+	return w.dispatchRuntimeAuthUpdate(update)
+}
+
+// DispatchPersistedAuthUpdate pushes already-persisted file auth updates through the watcher queue.
+// Returns true if the update was enqueued; false if no queue is configured.
+func (w *Watcher) DispatchPersistedAuthUpdate(update AuthUpdate) bool {
+	return w.dispatchPersistedAuthUpdate(update)
+}
+
+// SnapshotCoreAuths converts current clients snapshot into core auth entries.
+func (w *Watcher) SnapshotCoreAuths() []*coreauth.Auth {
+	w.clientsMutex.RLock()
+	cfg := w.config
+	authDir := w.authDir
+	parser := w.pluginAuthParser
+	w.clientsMutex.RUnlock()
+	return snapshotCoreAuths(cfg, authDir, parser)
 }

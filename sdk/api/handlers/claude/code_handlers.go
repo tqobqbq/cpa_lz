@@ -11,15 +11,20 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"strings"
+	"syscall"
+	"time"
 
 	"github.com/gin-gonic/gin"
-	. "github.com/router-for-me/CLIProxyAPI/v6/internal/constant"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/interfaces"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
-	"github.com/router-for-me/CLIProxyAPI/v6/sdk/api/handlers"
+	. "github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 )
@@ -162,10 +167,12 @@ func (h *ClaudeCodeAPIHandler) handleNonStreamingResponse(c *gin.Context, rawJSO
 	c.Header("Content-Type", "application/json")
 	alt := h.GetAlt(c)
 	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
+	stopKeepAlive := h.StartNonStreamingKeepAlive(c, cliCtx)
 
 	modelName := gjson.GetBytes(rawJSON, "model").String()
 
 	resp, upstreamHeaders, errMsg := h.ExecuteWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, alt)
+	stopKeepAlive()
 	if errMsg != nil {
 		h.WriteErrorResponse(c, errMsg)
 		cliCancel(errMsg.Error)
@@ -228,59 +235,169 @@ func (h *ClaudeCodeAPIHandler) handleStreamingResponse(c *gin.Context, rawJSON [
 	dataChan, upstreamHeaders, errChan := h.ExecuteStreamWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, "")
 	setSSEHeaders := func() {
 		c.Header("Content-Type", "text/event-stream")
-		c.Header("Cache-Control", "no-cache, no-transform")
+		c.Header("Cache-Control", "no-cache")
 		c.Header("Connection", "keep-alive")
 		c.Header("Access-Control-Allow-Origin", "*")
-		c.Header("X-Accel-Buffering", "no")
 	}
 
-	setSSEHeaders()
-	handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
-	c.Writer.WriteHeaderNow()
-	flusher.Flush()
+	// Peek at the first chunk to determine success or failure before setting headers
+	for {
+		select {
+		case <-c.Request.Context().Done():
+			cliCancel(c.Request.Context().Err())
+			return
+		case errMsg, ok := <-errChan:
+			if !ok {
+				// Err channel closed cleanly; wait for data channel.
+				errChan = nil
+				continue
+			}
+			// Upstream failed immediately. Return proper error status and JSON.
+			h.WriteErrorResponse(c, errMsg)
+			if errMsg != nil {
+				cliCancel(errMsg.Error)
+			} else {
+				cliCancel(nil)
+			}
+			return
+		case chunk, ok := <-dataChan:
+			if !ok {
+				if errMsg, okPendingErr := pendingClaudeStreamError(errChan); okPendingErr {
+					h.WriteErrorResponse(c, errMsg)
+					if errMsg != nil {
+						cliCancel(errMsg.Error)
+					} else {
+						cliCancel(nil)
+					}
+					return
+				}
+				// Stream closed without data? Send DONE or just headers.
+				setSSEHeaders()
+				handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
+				flusher.Flush()
+				cliCancel(nil)
+				return
+			}
 
-	h.forwardClaudeStream(c, flusher, func(err error) { cliCancel(err) }, dataChan, errChan)
+			// Success! Set headers now.
+			setSSEHeaders()
+			handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
+
+			// Write the first chunk
+			if len(chunk) > 0 {
+				_, _ = c.Writer.Write(chunk)
+				flusher.Flush()
+			}
+
+			// Continue streaming the rest
+			h.forwardClaudeStream(c, flusher, func(err error) { cliCancel(err) }, dataChan, errChan)
+			return
+		}
+	}
+}
+
+func pendingClaudeStreamError(errs <-chan *interfaces.ErrorMessage) (*interfaces.ErrorMessage, bool) {
+	if errs == nil {
+		return nil, false
+	}
+	select {
+	case errMsg, ok := <-errs:
+		if !ok {
+			return nil, false
+		}
+		return errMsg, true
+	default:
+		return nil, false
+	}
 }
 
 func (h *ClaudeCodeAPIHandler) forwardClaudeStream(c *gin.Context, flusher http.Flusher, cancel func(error), data <-chan []byte, errs <-chan *interfaces.ErrorMessage) {
-	wroteChunk := false
-	writeStreamError := func(errMsg *interfaces.ErrorMessage) {
-		if errMsg == nil {
-			return
-		}
-		status := http.StatusInternalServerError
-		if errMsg.StatusCode > 0 {
-			status = errMsg.StatusCode
-		}
-		if !c.Writer.Written() {
-			c.Status(status)
-		}
-
-		errorBytes, _ := json.Marshal(h.toClaudeError(errMsg))
-		_, _ = fmt.Fprintf(c.Writer, "event: error\ndata: %s\n\n", errorBytes)
-	}
-
 	h.ForwardStream(c, flusher, cancel, data, errs, handlers.StreamForwardOptions{
 		WriteChunk: func(chunk []byte) {
 			if len(chunk) == 0 {
 				return
 			}
-			wroteChunk = true
 			_, _ = c.Writer.Write(chunk)
 		},
-		WriteDone: func() {
-			if wroteChunk {
-				return
+		AbortTerminalError: func(errMsg *interfaces.ErrorMessage) bool {
+			if !isRetryableClaudeTransportError(errMsg) {
+				return false
 			}
-			writeStreamError(&interfaces.ErrorMessage{
-				StatusCode: http.StatusBadGateway,
-				Error:      fmt.Errorf("upstream returned an empty response"),
-			})
+			abortHTTPStream(c)
+			return true
 		},
 		WriteTerminalError: func(errMsg *interfaces.ErrorMessage) {
-			writeStreamError(errMsg)
+			if errMsg == nil {
+				return
+			}
+			status := http.StatusInternalServerError
+			if errMsg.StatusCode > 0 {
+				status = errMsg.StatusCode
+			}
+			c.Status(status)
+
+			errorBytes, _ := json.Marshal(h.toClaudeError(errMsg))
+			_, _ = fmt.Fprintf(c.Writer, "event: error\ndata: %s\n\n", errorBytes)
 		},
 	})
+}
+
+func isRetryableClaudeTransportError(errMsg *interfaces.ErrorMessage) bool {
+	if errMsg == nil || errMsg.Error == nil {
+		return false
+	}
+	status := errMsg.StatusCode
+	if status > 0 && status != http.StatusRequestTimeout && status < http.StatusInternalServerError {
+		return false
+	}
+	err := errMsg.Error
+	if errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, syscall.ECONNRESET) ||
+		errors.Is(err, syscall.ECONNABORTED) ||
+		errors.Is(err, syscall.EPIPE) ||
+		errors.Is(err, syscall.ETIMEDOUT) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	text := strings.ToLower(strings.TrimSpace(err.Error()))
+	if text == "" {
+		return false
+	}
+	for _, marker := range []string{
+		"connection reset by peer",
+		"connection aborted",
+		"connection refused",
+		"broken pipe",
+		"i/o timeout",
+		"unexpected eof",
+		"use of closed network connection",
+	} {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func abortHTTPStream(c *gin.Context) {
+	if c == nil || c.Writer == nil {
+		return
+	}
+	hijacker, ok := c.Writer.(http.Hijacker)
+	if !ok {
+		return
+	}
+	defer func() {
+		_ = recover()
+	}()
+	conn, _, err := hijacker.Hijack()
+	if err != nil {
+		return
+	}
+	_ = conn.Close()
 }
 
 type claudeErrorDetail struct {
@@ -294,11 +411,135 @@ type claudeErrorResponse struct {
 }
 
 func (h *ClaudeCodeAPIHandler) toClaudeError(msg *interfaces.ErrorMessage) claudeErrorResponse {
+	status := http.StatusInternalServerError
+	errText := http.StatusText(status)
+	if msg != nil {
+		if msg.StatusCode > 0 {
+			status = msg.StatusCode
+			errText = http.StatusText(status)
+		}
+		if msg.Error != nil {
+			if v := strings.TrimSpace(msg.Error.Error()); v != "" {
+				errText = v
+			}
+		}
+	}
+	errType, message := claudeErrorDetailFromText(status, errText)
 	return claudeErrorResponse{
 		Type: "error",
 		Error: claudeErrorDetail{
-			Type:    "api_error",
-			Message: msg.Error.Error(),
+			Type:    errType,
+			Message: message,
 		},
 	}
+}
+
+func (h *ClaudeCodeAPIHandler) WriteErrorResponse(c *gin.Context, msg *interfaces.ErrorMessage) {
+	status := http.StatusInternalServerError
+	if msg != nil && msg.StatusCode > 0 {
+		status = msg.StatusCode
+	}
+	if msg != nil && msg.Addon != nil && handlers.PassthroughHeadersEnabled(h.Cfg) {
+		for key, values := range msg.Addon {
+			if len(values) == 0 {
+				continue
+			}
+			c.Writer.Header().Del(key)
+			for _, value := range values {
+				c.Writer.Header().Add(key, value)
+			}
+		}
+	}
+
+	body, err := json.Marshal(h.toClaudeError(msg))
+	if err != nil {
+		body = []byte(`{"type":"error","error":{"type":"api_error","message":"Internal Server Error"}}`)
+	}
+	appendClaudeAPIResponse(c, body)
+	if !c.Writer.Written() {
+		c.Writer.Header().Set("Content-Type", "application/json")
+	}
+	c.Status(status)
+	_, _ = c.Writer.Write(body)
+}
+
+func claudeErrorDetailFromText(status int, errText string) (string, string) {
+	message := strings.TrimSpace(errText)
+	if message == "" {
+		message = http.StatusText(status)
+	}
+	errType := claudeErrorTypeFromStatus(status)
+
+	var payload map[string]any
+	if json.Valid([]byte(message)) {
+		if err := json.Unmarshal([]byte(message), &payload); err == nil {
+			if e, ok := payload["error"].(map[string]any); ok {
+				if t, ok := e["type"].(string); ok && strings.TrimSpace(t) != "" {
+					errType = strings.TrimSpace(t)
+				}
+				if m, ok := e["message"].(string); ok && strings.TrimSpace(m) != "" {
+					message = strings.TrimSpace(m)
+				} else if c, ok := e["code"].(string); ok && strings.TrimSpace(c) != "" {
+					message = strings.TrimSpace(c)
+				}
+			} else {
+				if t, ok := payload["type"].(string); ok && strings.TrimSpace(t) != "" && strings.TrimSpace(t) != "error" {
+					errType = strings.TrimSpace(t)
+				}
+				if m, ok := payload["message"].(string); ok && strings.TrimSpace(m) != "" {
+					message = strings.TrimSpace(m)
+				}
+			}
+		}
+	}
+
+	return errType, message
+}
+
+func claudeErrorTypeFromStatus(status int) string {
+	switch status {
+	case http.StatusUnauthorized:
+		return "authentication_error"
+	case http.StatusPaymentRequired:
+		return "billing_error"
+	case http.StatusForbidden:
+		return "permission_error"
+	case http.StatusNotFound:
+		return "not_found_error"
+	case http.StatusRequestEntityTooLarge:
+		return "request_too_large"
+	case http.StatusTooManyRequests:
+		return "rate_limit_error"
+	case http.StatusGatewayTimeout:
+		return "timeout_error"
+	case 529:
+		return "overloaded_error"
+	default:
+		if status >= http.StatusInternalServerError {
+			return "api_error"
+		}
+		return "invalid_request_error"
+	}
+}
+
+func appendClaudeAPIResponse(c *gin.Context, data []byte) {
+	if c == nil || len(data) == 0 {
+		return
+	}
+	if _, exists := c.Get("API_RESPONSE_TIMESTAMP"); !exists {
+		c.Set("API_RESPONSE_TIMESTAMP", time.Now())
+	}
+	if existing, exists := c.Get("API_RESPONSE"); exists {
+		if existingBytes, ok := existing.([]byte); ok && len(existingBytes) > 0 {
+			combined := make([]byte, 0, len(existingBytes)+len(data)+1)
+			combined = append(combined, existingBytes...)
+			if existingBytes[len(existingBytes)-1] != '\n' {
+				combined = append(combined, '\n')
+			}
+			combined = append(combined, data...)
+			c.Set("API_RESPONSE", combined)
+			return
+		}
+	}
+	c.Set("API_RESPONSE", bytes.Clone(data))
 }

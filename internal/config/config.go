@@ -13,7 +13,8 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	sdkpluginstore "github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginstore"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/crypto/bcrypt"
 	"gopkg.in/yaml.v3"
@@ -22,7 +23,7 @@ import (
 const (
 	DefaultPanelGitHubRepository = "https://github.com/router-for-me/Cli-Proxy-API-Management-Center"
 	DefaultPprofAddr             = "127.0.0.1:8316"
-	DefaultRoutingPriority       = 10
+	DefaultAuthDir               = "~/.cli-proxy-api"
 )
 
 // AuthFilesGroupConfig stores routing defaults shared by file-backed auth entries.
@@ -38,9 +39,6 @@ func DefaultBoolPtr(v bool) *bool { return &v }
 // DefaultIntPtr returns a pointer to the provided integer value.
 func DefaultIntPtr(v int) *int { return &v }
 
-// DefaultFloatPtr returns a pointer to the provided float64 value.
-func DefaultFloatPtr(v float64) *float64 { return &v }
-
 // EffectiveBool returns the configured bool or the provided default when unset.
 func EffectiveBool(value *bool, defaultValue bool) bool {
 	if value == nil {
@@ -49,10 +47,10 @@ func EffectiveBool(value *bool, defaultValue bool) bool {
 	return *value
 }
 
-// EffectivePriority returns the configured priority or the default routing priority when unset.
+// EffectivePriority returns the configured priority or 0 when unset.
 func EffectivePriority(value *int) int {
 	if value == nil {
-		return DefaultRoutingPriority
+		return 0
 	}
 	return *value
 }
@@ -69,8 +67,14 @@ type Config struct {
 	// TLS config controls HTTPS server settings.
 	TLS TLSConfig `yaml:"tls" json:"tls"`
 
+	// Home config is runtime-only and is populated from -home-jwt.
+	Home HomeConfig `yaml:"-" json:"-"`
+
 	// RemoteManagement nests management-related options under 'remote-management'.
 	RemoteManagement RemoteManagement `yaml:"remote-management" json:"-"`
+
+	// Plugins configures dynamic plugin discovery and per-plugin settings.
+	Plugins PluginsConfig `yaml:"plugins" json:"plugins"`
 
 	// AuthDir is the directory where authentication token files are stored.
 	AuthDir string `yaml:"auth-dir" json:"-"`
@@ -81,7 +85,7 @@ type Config struct {
 	// Pprof config controls the optional pprof HTTP debug server.
 	Pprof PprofConfig `yaml:"pprof" json:"pprof"`
 
-	// CommercialMode disables high-overhead HTTP middleware features to minimize per-request memory usage.
+	// CommercialMode disables high-overhead request logging and HTTP middleware features to minimize per-request memory usage.
 	CommercialMode bool `yaml:"commercial-mode" json:"commercial-mode"`
 
 	// LoggingToFile controls whether application logs are written to rotating files or stdout.
@@ -98,8 +102,29 @@ type Config struct {
 	// UsageStatisticsEnabled toggles in-memory usage aggregation; when false, usage data is discarded.
 	UsageStatisticsEnabled bool `yaml:"usage-statistics-enabled" json:"usage-statistics-enabled"`
 
+	// RedisUsageQueueRetentionSeconds controls how long usage queue items are retained
+	// in memory for Management API consumers.
+	// Default: 60. Max: 3600.
+	RedisUsageQueueRetentionSeconds int `yaml:"redis-usage-queue-retention-seconds" json:"redis-usage-queue-retention-seconds"`
+
+	// OutputFilter configures downstream output rejection rules.
+	OutputFilter OutputFilterConfig `yaml:"output-filter,omitempty" json:"output-filter,omitempty"`
+
+	// CodexRemoveEmptyInputName removes empty input item names before forwarding Codex requests.
+	CodexRemoveEmptyInputName bool `yaml:"codex-remove-empty-input-name" json:"codex-remove-empty-input-name"`
+
+	// AuthFilesGroup configures group-level defaults for file-backed auth routing.
+	AuthFilesGroup AuthFilesGroupConfig `yaml:"auth-files-group,omitempty" json:"auth-files-group,omitempty"`
+
 	// DisableCooling disables quota cooldown scheduling when true.
 	DisableCooling bool `yaml:"disable-cooling" json:"disable-cooling"`
+
+	// SaveCooldownStatus persists runtime cooldown status next to auth files when true.
+	SaveCooldownStatus bool `yaml:"save-cooldown-status" json:"save-cooldown-status"`
+
+	// TransientErrorCooldownSeconds controls cooldowns for transient upstream errors.
+	// 0 keeps the legacy default cooldown. Negative values disable these cooldowns.
+	TransientErrorCooldownSeconds int `yaml:"transient-error-cooldown-seconds" json:"transient-error-cooldown-seconds"`
 
 	// AuthAutoRefreshWorkers overrides the size of the core auth auto-refresh worker pool.
 	// When <= 0, the default worker count is used.
@@ -107,29 +132,17 @@ type Config struct {
 
 	// RequestRetry defines the retry times when the request failed.
 	RequestRetry int `yaml:"request-retry" json:"request-retry"`
+	// MaxRetryCredentials defines the maximum number of credentials to try for a failed request.
+	// Set to 0 or a negative value to keep trying all available credentials (legacy behavior).
+	MaxRetryCredentials int `yaml:"max-retry-credentials" json:"max-retry-credentials"`
 	// MaxRetryInterval defines the maximum wait time in seconds before retrying a cooled-down credential.
 	MaxRetryInterval int `yaml:"max-retry-interval" json:"max-retry-interval"`
-
-	// ErrorControl configures provider-local retries and whole-request retry rounds.
-	ErrorControl ErrorControlConfig `yaml:"error-control,omitempty" json:"error-control,omitempty"`
-
-	// ProviderCooldown configures count-based cooldown after provider call failures.
-	ProviderCooldown ProviderCooldownConfig `yaml:"provider-cooldown,omitempty" json:"provider-cooldown,omitempty"`
-
-	// OutputFilter configures downstream output rejection rules.
-	OutputFilter OutputFilterConfig `yaml:"output-filter,omitempty" json:"output-filter,omitempty"`
 
 	// QuotaExceeded defines the behavior when a quota is exceeded.
 	QuotaExceeded QuotaExceeded `yaml:"quota-exceeded" json:"quota-exceeded"`
 
 	// Routing controls credential selection behavior.
 	Routing RoutingConfig `yaml:"routing" json:"routing"`
-
-	// DefaultTestModels configures fallback provider test models for management UI connectivity tests.
-	DefaultTestModels DefaultTestModelsConfig `yaml:"default-test-models,omitempty" json:"default-test-models,omitempty"`
-
-	// AuthFilesGroup configures group-level defaults for file-backed auth routing.
-	AuthFilesGroup AuthFilesGroupConfig `yaml:"auth-files-group,omitempty" json:"auth-files-group,omitempty"`
 
 	// WebsocketAuth enables or disables authentication for the WebSocket API.
 	WebsocketAuth bool `yaml:"ws-auth" json:"ws-auth"`
@@ -147,12 +160,12 @@ type Config struct {
 	// Codex defines a list of Codex API key configurations as specified in the YAML configuration file.
 	CodexKey []CodexKey `yaml:"codex-api-key" json:"codex-api-key"`
 
+	// Codex configures provider-wide Codex request behavior.
+	Codex CodexConfig `yaml:"codex" json:"codex"`
+
 	// CodexHeaderDefaults configures fallback headers for Codex OAuth model requests.
 	// These are used only when the client does not send its own headers.
 	CodexHeaderDefaults CodexHeaderDefaults `yaml:"codex-header-defaults" json:"codex-header-defaults"`
-
-	// CodexRemoveEmptyInputName removes empty input item names before forwarding Codex requests.
-	CodexRemoveEmptyInputName bool `yaml:"codex-remove-empty-input-name" json:"codex-remove-empty-input-name"`
 
 	// ClaudeKey defines a list of Claude API key configurations as specified in the YAML configuration file.
 	ClaudeKey []ClaudeKey `yaml:"claude-api-key" json:"claude-api-key"`
@@ -161,6 +174,14 @@ type Config struct {
 	// These are used as fallbacks when the client does not send its own headers.
 	ClaudeHeaderDefaults ClaudeHeaderDefaults `yaml:"claude-header-defaults" json:"claude-header-defaults"`
 
+	// DisableClaudeCloakMode globally disables Claude request cloaking when true.
+	// Cloaking disguises requests as the official Claude Code CLI and replaces the
+	// system prompt. When true, every Claude credential defaults to no cloaking
+	// ("never"); a specific credential can still re-enable or override it via its own
+	// cloak settings (the per claude-api-key "cloak" block, or a "cloak_mode" value in
+	// the auth/OAuth token file). Default false preserves the per-client "auto" behavior.
+	DisableClaudeCloakMode bool `yaml:"disable-claude-cloak-mode" json:"disable-claude-cloak-mode"`
+
 	// OpenAICompatibility defines OpenAI API compatibility configurations for external providers.
 	OpenAICompatibility []OpenAICompatibility `yaml:"openai-compatibility" json:"openai-compatibility"`
 
@@ -168,26 +189,311 @@ type Config struct {
 	// Used for services that use Vertex AI-style paths but with simple API key authentication.
 	VertexCompatAPIKey []VertexCompatKey `yaml:"vertex-api-key" json:"vertex-api-key"`
 
-	// AmpCode contains Amp CLI upstream configuration, management restrictions, and model mappings.
-	AmpCode AmpCode `yaml:"ampcode" json:"ampcode"`
-
 	// OAuthExcludedModels defines per-provider global model exclusions applied to OAuth/file-backed auth entries.
 	OAuthExcludedModels map[string][]string `yaml:"oauth-excluded-models,omitempty" json:"oauth-excluded-models,omitempty"`
 
 	// OAuthModelAlias defines global model name aliases for OAuth/file-backed auth channels.
 	// These aliases affect both model listing and model routing for supported channels:
-	// gemini-cli, vertex, aistudio, antigravity, claude, codex, kimi.
+	// vertex, aistudio, antigravity, claude, codex, kimi, xai.
 	//
 	// NOTE: This does not apply to existing per-credential model alias features under:
-	// gemini-api-key, codex-api-key, claude-api-key, openai-compatibility, vertex-api-key, and ampcode.
+	// gemini-api-key, codex-api-key, claude-api-key, openai-compatibility, and vertex-api-key.
 	OAuthModelAlias map[string][]OAuthModelAlias `yaml:"oauth-model-alias,omitempty" json:"oauth-model-alias,omitempty"`
 
 	// Payload defines default and override rules for provider payload parameters.
 	Payload PayloadConfig `yaml:"payload" json:"payload"`
-
-	legacyMigrationPending bool `yaml:"-" json:"-"`
 }
 
+// PluginsConfig holds dynamic plugin system settings.
+type PluginsConfig struct {
+	// Enabled toggles dynamic plugin loading.
+	Enabled bool `yaml:"enabled" json:"enabled"`
+	// Dir is the plugin discovery directory.
+	Dir string `yaml:"dir" json:"dir"`
+	// StoreSources appends third-party plugin store registries to the built-in official source.
+	StoreSources []string `yaml:"store-sources,omitempty" json:"store-sources,omitempty"`
+	// StoreAuth defines optional auth rules for plugin store registry, metadata, and artifact requests.
+	StoreAuth []sdkpluginstore.AuthConfig `yaml:"store-auth,omitempty" json:"store-auth,omitempty"`
+	// Configs stores per-plugin instance configuration by plugin ID.
+	Configs map[string]PluginInstanceConfig `yaml:"configs" json:"configs"`
+}
+
+// PluginInstanceConfig stores host-owned plugin settings and the original plugin YAML subtree.
+type PluginInstanceConfig struct {
+	// Enabled toggles this plugin instance. Nil is normalized to false during YAML parsing.
+	Enabled *bool `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+	// Priority controls plugin startup and routing order.
+	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
+	// Raw preserves the full original plugin configuration YAML subtree.
+	Raw yaml.Node `yaml:"-" json:"-"`
+}
+
+// UnmarshalYAML extracts host-owned fields while preserving the full original YAML node.
+func (c *PluginInstanceConfig) UnmarshalYAML(value *yaml.Node) error {
+	if c == nil {
+		return nil
+	}
+
+	c.Priority = 0
+	defaultEnabled := false
+	c.Enabled = &defaultEnabled
+
+	if value == nil || value.Kind == 0 {
+		c.Raw = *defaultPluginInstanceConfigNode()
+		return nil
+	}
+
+	c.Raw = *deepCopyNode(value)
+	if value.Kind != yaml.MappingNode {
+		return nil
+	}
+
+	for i := 0; i+1 < len(value.Content); i += 2 {
+		key := value.Content[i]
+		node := value.Content[i+1]
+		if key == nil {
+			continue
+		}
+		switch key.Value {
+		case "enabled":
+			var enabled bool
+			if errDecodeEnabled := node.Decode(&enabled); errDecodeEnabled != nil {
+				return fmt.Errorf("parse plugin enabled: %w", errDecodeEnabled)
+			}
+			c.Enabled = &enabled
+		case "priority":
+			var priority int
+			if errDecodePriority := node.Decode(&priority); errDecodePriority != nil {
+				return fmt.Errorf("parse plugin priority: %w", errDecodePriority)
+			}
+			c.Priority = priority
+		}
+	}
+
+	return nil
+}
+
+// MarshalYAML returns the preserved raw plugin YAML subtree for lossless config output.
+func (c PluginInstanceConfig) MarshalYAML() (any, error) {
+	if c.Raw.Kind == 0 {
+		return defaultPluginInstanceConfigNode(), nil
+	}
+	return deepCopyNode(&c.Raw), nil
+}
+
+func defaultPluginInstanceConfigNode() *yaml.Node {
+	return &yaml.Node{
+		Kind:    yaml.MappingNode,
+		Tag:     "!!map",
+		Content: []*yaml.Node{},
+	}
+}
+
+// ClaudeHeaderDefaults configures default header values injected into Claude API requests.
+// In legacy mode, UserAgent/PackageVersion/RuntimeVersion/Timeout act as fallbacks when
+// the client omits them, while OS/Arch remain runtime-derived. When stabilized device
+// profiles are enabled, OS/Arch become the pinned platform baseline, while
+// UserAgent/PackageVersion/RuntimeVersion seed the upgradeable software fingerprint.
+type ClaudeHeaderDefaults struct {
+	UserAgent              string `yaml:"user-agent" json:"user-agent"`
+	PackageVersion         string `yaml:"package-version" json:"package-version"`
+	RuntimeVersion         string `yaml:"runtime-version" json:"runtime-version"`
+	OS                     string `yaml:"os" json:"os"`
+	Arch                   string `yaml:"arch" json:"arch"`
+	Timeout                string `yaml:"timeout" json:"timeout"`
+	StabilizeDeviceProfile *bool  `yaml:"stabilize-device-profile,omitempty" json:"stabilize-device-profile,omitempty"`
+}
+
+// CodexHeaderDefaults configures fallback header values injected into Codex
+// model requests for OAuth/file-backed auth when the client omits them.
+// UserAgent applies to HTTP and websocket requests; BetaFeatures only applies to websockets.
+type CodexHeaderDefaults struct {
+	UserAgent    string `yaml:"user-agent" json:"user-agent"`
+	BetaFeatures string `yaml:"beta-features" json:"beta-features"`
+}
+
+// CodexConfig configures provider-wide Codex request behavior.
+type CodexConfig struct {
+	IdentityConfuse bool `yaml:"identity-confuse" json:"identity-confuse"`
+}
+
+// TLSConfig holds HTTPS server settings.
+type TLSConfig struct {
+	// Enable toggles HTTPS server mode.
+	Enable bool `yaml:"enable" json:"enable"`
+	// Cert is the path to the TLS certificate file.
+	Cert string `yaml:"cert" json:"cert"`
+	// Key is the path to the TLS private key file.
+	Key string `yaml:"key" json:"key"`
+}
+
+// PprofConfig holds pprof HTTP server settings.
+type PprofConfig struct {
+	// Enable toggles the pprof HTTP debug server.
+	Enable bool `yaml:"enable" json:"enable"`
+	// Addr is the host:port address for the pprof HTTP server.
+	Addr string `yaml:"addr" json:"addr"`
+}
+
+// RemoteManagement holds management API configuration under 'remote-management'.
+type RemoteManagement struct {
+	// AllowRemote toggles remote (non-localhost) access to management API.
+	AllowRemote bool `yaml:"allow-remote"`
+	// SecretKey is the management key (plaintext or bcrypt hashed). YAML key intentionally 'secret-key'.
+	SecretKey string `yaml:"secret-key"`
+	// DisableControlPanel skips serving and syncing the bundled management UI when true.
+	DisableControlPanel bool `yaml:"disable-control-panel"`
+	// DisableAutoUpdatePanel disables automatic periodic background updates of the management panel asset from GitHub.
+	// When false (the default), the background updater remains enabled; when true, the panel is only downloaded on first access if missing.
+	DisableAutoUpdatePanel bool `yaml:"disable-auto-update-panel"`
+	// PanelGitHubRepository overrides the GitHub repository used to fetch the management panel asset.
+	// Accepts either a repository URL (https://github.com/org/repo) or an API releases endpoint.
+	PanelGitHubRepository string `yaml:"panel-github-repository"`
+}
+
+// QuotaExceeded defines the behavior when API quota limits are exceeded.
+// It provides configuration options for automatic failover mechanisms.
+type QuotaExceeded struct {
+	// SwitchProject indicates whether to automatically switch to another project when a quota is exceeded.
+	SwitchProject bool `yaml:"switch-project" json:"switch-project"`
+
+	// SwitchPreviewModel indicates whether to automatically switch to a preview model when a quota is exceeded.
+	SwitchPreviewModel bool `yaml:"switch-preview-model" json:"switch-preview-model"`
+
+	// AntigravityCredits enables credits-based last-resort fallback for Claude models.
+	// When all free-tier auths are exhausted (429/503), the conductor retries with
+	// an auth that has available Google One AI credits.
+	AntigravityCredits bool `yaml:"antigravity-credits" json:"antigravity-credits"`
+}
+
+// RoutingConfig configures how credentials are selected for requests.
+type RoutingConfig struct {
+	// Strategy selects the credential selection strategy.
+	// Supported values: "round-robin" (default), "fill-first".
+	Strategy string `yaml:"strategy,omitempty" json:"strategy,omitempty"`
+
+	// SessionAffinity enables universal session-sticky routing for all clients.
+	// Session IDs are extracted from multiple sources:
+	// metadata.user_id (Claude Code session format), X-Session-ID, Session_id (Codex),
+	// X-Client-Request-Id (PI), metadata.user_id, conversation_id, or message hash.
+	// Automatic failover is always enabled when bound auth becomes unavailable.
+	SessionAffinity bool `yaml:"session-affinity,omitempty" json:"session-affinity,omitempty"`
+
+	// SessionAffinityTTL specifies how long session-to-auth bindings are retained.
+	// Default: 1h. Accepts duration strings like "30m", "1h", "2h30m".
+	SessionAffinityTTL string `yaml:"session-affinity-ttl,omitempty" json:"session-affinity-ttl,omitempty"`
+
+	// Rules prefer a provider when downstream request metadata matches the configured conditions.
+	Rules []RoutingRule `yaml:"rules,omitempty" json:"rules,omitempty"`
+}
+
+// RoutingRule prefers one provider when the request metadata matches the configured conditions.
+type RoutingRule struct {
+	Provider   string                `yaml:"provider" json:"provider"`
+	UserAgent  RoutingUserAgentRule  `yaml:"user-agent,omitempty" json:"user-agent,omitempty"`
+	InputChars RoutingInputCharsRule `yaml:"input-chars,omitempty" json:"input-chars,omitempty"`
+}
+
+// RoutingUserAgentRule matches downstream request User-Agent values.
+type RoutingUserAgentRule struct {
+	Match string `yaml:"match,omitempty" json:"match,omitempty"`
+	Value string `yaml:"value,omitempty" json:"value,omitempty"`
+}
+
+// RoutingInputCharsRule matches downstream request body character counts.
+type RoutingInputCharsRule struct {
+	Operator string `yaml:"operator,omitempty" json:"operator,omitempty"`
+	Value    int64  `yaml:"value,omitempty" json:"value,omitempty"`
+}
+
+// OAuthModelAlias defines a model ID alias for a specific channel.
+// It maps the upstream model name (Name) to the client-visible alias (Alias).
+// When Fork is true, the alias is added as an additional model in listings while
+// keeping the original model ID available.
+type OAuthModelAlias struct {
+	Name  string `yaml:"name" json:"name"`
+	Alias string `yaml:"alias" json:"alias"`
+	Fork  bool   `yaml:"fork,omitempty" json:"fork,omitempty"`
+
+	ForceMapping bool `yaml:"force-mapping,omitempty" json:"force-mapping,omitempty"`
+}
+
+// PayloadConfig defines default and override parameter rules applied to provider payloads.
+type PayloadConfig struct {
+	// Default defines rules that only set parameters when they are missing in the payload.
+	Default []PayloadRule `yaml:"default" json:"default"`
+	// DefaultRaw defines rules that set raw JSON values only when they are missing.
+	DefaultRaw []PayloadRule `yaml:"default-raw" json:"default-raw"`
+	// Override defines rules that always set parameters, overwriting any existing values.
+	Override []PayloadRule `yaml:"override" json:"override"`
+	// OverrideRaw defines rules that always set raw JSON values, overwriting any existing values.
+	OverrideRaw []PayloadRule `yaml:"override-raw" json:"override-raw"`
+	// Filter defines rules that remove parameters from the payload by JSON path.
+	Filter []PayloadFilterRule `yaml:"filter" json:"filter"`
+}
+
+// PayloadFilterRule describes a rule to remove specific JSON paths from matching model payloads.
+type PayloadFilterRule struct {
+	// Models lists model entries with name pattern and protocol constraint.
+	Models []PayloadModelRule `yaml:"models" json:"models"`
+	// Params lists JSON paths (gjson/sjson syntax) to remove from the payload.
+	Params []string `yaml:"params" json:"params"`
+}
+
+// PayloadRule describes a single rule targeting a list of models with parameter updates.
+type PayloadRule struct {
+	// Models lists model entries with name pattern and protocol constraint.
+	Models []PayloadModelRule `yaml:"models" json:"models"`
+	// Params maps JSON paths (gjson/sjson syntax) to values written into the payload.
+	// For *-raw rules, values are treated as raw JSON fragments (strings are used as-is).
+	Params map[string]any `yaml:"params" json:"params"`
+}
+
+// PayloadModelRule ties a model name pattern to a specific translator protocol.
+type PayloadModelRule struct {
+	// Name is the model name or wildcard pattern (e.g., "gpt-*", "*-5", "gemini-*-pro").
+	Name string `yaml:"name" json:"name"`
+	// Protocol restricts the rule to a specific translator format (e.g., "gemini", "responses").
+	Protocol string `yaml:"protocol" json:"protocol"`
+	// Headers restricts the rule to requests whose headers match all configured wildcard patterns.
+	Headers map[string]string `yaml:"headers" json:"headers"`
+	// FromProtocol restricts the rule to a specific source protocol (e.g., "gemini", "responses").
+	FromProtocol string `yaml:"from-protocol" json:"from-protocol"`
+	// Match requires payload JSON paths to equal the configured values.
+	Match []map[string]any `yaml:"match" json:"match"`
+	// NotMatch requires payload JSON paths to not equal the configured values.
+	NotMatch []map[string]any `yaml:"not-match" json:"not-match"`
+	// Exist requires payload JSON paths to exist and not be null.
+	Exist []string `yaml:"exist" json:"exist"`
+	// NotExist requires payload JSON paths to be missing or null.
+	NotExist []string `yaml:"not-exist" json:"not-exist"`
+}
+
+// CloakConfig configures request cloaking for non-Claude-Code clients.
+// Cloaking disguises API requests to appear as originating from the official Claude Code CLI.
+type CloakConfig struct {
+	// Mode controls cloaking behavior: "auto" (default), "always", or "never".
+	// - "auto": cloak only when client is not Claude Code (based on User-Agent)
+	// - "always": always apply cloaking regardless of client
+	// - "never": never apply cloaking
+	Mode string `yaml:"mode,omitempty" json:"mode,omitempty"`
+
+	// StrictMode controls how system prompts are handled when cloaking.
+	// - false (default): prepend Claude Code prompt to user system messages
+	// - true: strip all user system messages, keep only Claude Code prompt
+	StrictMode bool `yaml:"strict-mode,omitempty" json:"strict-mode,omitempty"`
+
+	// SensitiveWords is a list of words to obfuscate with zero-width characters.
+	// This can help bypass certain content filters.
+	SensitiveWords []string `yaml:"sensitive-words,omitempty" json:"sensitive-words,omitempty"`
+
+	// CacheUserID controls whether Claude user_id values are cached per API key.
+	// When false, a fresh random user_id is generated for every request.
+	CacheUserID *bool `yaml:"cache-user-id,omitempty" json:"cache-user-id,omitempty"`
+}
+
+// ClaudeKey represents the configuration for a Claude API key,
+// including the API key itself and an optional base URL for the API endpoint.
 // OutputFilterRule rejects short upstream outputs containing configured keywords.
 type OutputFilterRule struct {
 	Enabled   bool     `yaml:"enabled,omitempty" json:"enabled,omitempty"`
@@ -238,320 +544,13 @@ func (c OutputFilterConfig) HasActiveRules() bool {
 	return false
 }
 
-// ClaudeHeaderDefaults configures default header values injected into Claude API requests.
-// In legacy mode, UserAgent/PackageVersion/RuntimeVersion/Timeout act as fallbacks when
-// the client omits them, while OS/Arch remain runtime-derived. When stabilized device
-// profiles are enabled, OS/Arch become the pinned platform baseline, while
-// UserAgent/PackageVersion/RuntimeVersion seed the upgradeable software fingerprint.
-type ClaudeHeaderDefaults struct {
-	UserAgent              string `yaml:"user-agent" json:"user-agent"`
-	PackageVersion         string `yaml:"package-version" json:"package-version"`
-	RuntimeVersion         string `yaml:"runtime-version" json:"runtime-version"`
-	OS                     string `yaml:"os" json:"os"`
-	Arch                   string `yaml:"arch" json:"arch"`
-	Timeout                string `yaml:"timeout" json:"timeout"`
-	StabilizeDeviceProfile *bool  `yaml:"stabilize-device-profile,omitempty" json:"stabilize-device-profile,omitempty"`
-}
-
-// CodexHeaderDefaults configures fallback header values injected into Codex
-// model requests for OAuth/file-backed auth when the client omits them.
-// UserAgent applies to HTTP and websocket requests; BetaFeatures only applies to websockets.
-type CodexHeaderDefaults struct {
-	UserAgent    string `yaml:"user-agent" json:"user-agent"`
-	BetaFeatures string `yaml:"beta-features" json:"beta-features"`
-}
-
-// TLSConfig holds HTTPS server settings.
-type TLSConfig struct {
-	// Enable toggles HTTPS server mode.
-	Enable bool `yaml:"enable" json:"enable"`
-	// Cert is the path to the TLS certificate file.
-	Cert string `yaml:"cert" json:"cert"`
-	// Key is the path to the TLS private key file.
-	Key string `yaml:"key" json:"key"`
-}
-
-// PprofConfig holds pprof HTTP server settings.
-type PprofConfig struct {
-	// Enable toggles the pprof HTTP debug server.
-	Enable bool `yaml:"enable" json:"enable"`
-	// Addr is the host:port address for the pprof HTTP server.
-	Addr string `yaml:"addr" json:"addr"`
-}
-
-// RemoteManagement holds management API configuration under 'remote-management'.
-type RemoteManagement struct {
-	// AllowRemote toggles remote (non-localhost) access to management API.
-	AllowRemote bool `yaml:"allow-remote"`
-	// SecretKey is the management key (plaintext or bcrypt hashed). YAML key intentionally 'secret-key'.
-	SecretKey string `yaml:"secret-key"`
-	// DisableControlPanel skips serving and syncing the bundled management UI when true.
-	DisableControlPanel bool `yaml:"disable-control-panel"`
-	// DisableAutoUpdatePanel disables automatic periodic background updates of the management panel asset from GitHub.
-	// When false (the default), the background updater remains enabled; when true, the panel is only downloaded on first access if missing.
-	DisableAutoUpdatePanel bool `yaml:"disable-auto-update-panel"`
-	// PanelGitHubRepository overrides the GitHub repository used to fetch the management panel asset.
-	// Accepts either a repository URL (https://github.com/org/repo) or an API releases endpoint.
-	PanelGitHubRepository string `yaml:"panel-github-repository"`
-}
-
-// QuotaExceeded defines the behavior when API quota limits are exceeded.
-// It provides configuration options for automatic failover mechanisms.
-type QuotaExceeded struct {
-	// SwitchProject indicates whether to automatically switch to another project when a quota is exceeded.
-	SwitchProject bool `yaml:"switch-project" json:"switch-project"`
-
-	// SwitchPreviewModel indicates whether to automatically switch to a preview model when a quota is exceeded.
-	SwitchPreviewModel bool `yaml:"switch-preview-model" json:"switch-preview-model"`
-
-	// AntigravityCredits indicates whether to retry Antigravity quota_exhausted 429s once
-	// on the same credential with enabledCreditTypes=["GOOGLE_ONE_AI"].
-	AntigravityCredits bool `yaml:"antigravity-credits" json:"antigravity-credits"`
-}
-
-// ErrorControlConfig stores retry controls for upstream provider failures.
-type ErrorControlConfig struct {
-	// Default applies when no provider or credential override is configured.
-	Default ErrorControlPolicy `yaml:"default,omitempty" json:"default,omitempty"`
-
-	// Providers stores per-provider retry policies keyed by provider name.
-	Providers map[string]ErrorControlPolicy `yaml:"providers,omitempty" json:"providers,omitempty"`
-}
-
-// ErrorControlPolicy controls whole-request retry rounds for one provider/auth scope.
-type ErrorControlPolicy struct {
-	// RetryRounds is the number of full candidate-set rounds for one request.
-	RetryRounds *int `yaml:"retry-rounds,omitempty" json:"retry-rounds,omitempty"`
-
-	// RoundBackoffBase is the initial backoff duration in seconds between outer retry rounds.
-	RoundBackoffBase *float64 `yaml:"round-backoff-base,omitempty" json:"round-backoff-base,omitempty"`
-
-	// RoundBackoffExponent is the multiplier applied to the backoff on each successive round.
-	RoundBackoffExponent *float64 `yaml:"round-backoff-exponent,omitempty" json:"round-backoff-exponent,omitempty"`
-
-	// RoundBackoffMax is the maximum backoff duration in seconds between outer retry rounds.
-	RoundBackoffMax *float64 `yaml:"round-backoff-max,omitempty" json:"round-backoff-max,omitempty"`
-}
-
-const (
-	// DefaultProviderCooldownStart is the first failure cooldown count.
-	DefaultProviderCooldownStart = 1
-	// DefaultProviderCooldownExponent is the failure multiplier.
-	DefaultProviderCooldownExponent = 1.2
-	// DefaultProviderCooldownMax is the maximum cooldown count.
-	DefaultProviderCooldownMax = 10
-)
-
-// ProviderCooldownConfig stores count-based provider failure cooldown settings.
-type ProviderCooldownConfig struct {
-	// Start is the cooldown count assigned after the first failure.
-	Start *int `yaml:"start,omitempty" json:"start,omitempty"`
-
-	// Exponent multiplies the previously generated cooldown count after each later failure.
-	Exponent *float64 `yaml:"exponent,omitempty" json:"exponent,omitempty"`
-
-	// Max caps the computed cooldown count.
-	Max *int `yaml:"max,omitempty" json:"max,omitempty"`
-}
-
-// RoutingConfig configures how credentials are selected for requests.
-type RoutingConfig struct {
-	// Strategy selects the credential selection strategy.
-	// Supported values: "random" (default), "last-success".
-	Strategy string `yaml:"strategy,omitempty" json:"strategy,omitempty"`
-
-	// ParallelRequestsEnabled allows eligible same-priority credentials to be dispatched concurrently.
-	ParallelRequestsEnabled bool `yaml:"parallel-requests-enabled,omitempty" json:"parallel-requests-enabled,omitempty"`
-
-	// ParallelRequestsMinRound is the minimum 1-based retry round before parallel dispatch can start.
-	ParallelRequestsMinRound int `yaml:"parallel-requests-min-round,omitempty" json:"parallel-requests-min-round,omitempty"`
-
-	// ParallelRequestsMinFailures is the minimum consecutive failure count before a credential is parallel eligible.
-	ParallelRequestsMinFailures int `yaml:"parallel-requests-min-failures,omitempty" json:"parallel-requests-min-failures,omitempty"`
-
-	// ClaudeCodeSessionAffinity enables session-sticky routing for Claude Code clients.
-	// When enabled, requests with the same session ID (extracted from metadata.user_id)
-	// are routed to the same auth credential when available.
-	// Deprecated: Use SessionAffinity instead for universal session support.
-	ClaudeCodeSessionAffinity bool `yaml:"claude-code-session-affinity,omitempty" json:"claude-code-session-affinity,omitempty"`
-
-	// SessionAffinity enables universal session-sticky routing for all clients.
-	// Session IDs are extracted from multiple sources:
-	// X-Session-ID header, Idempotency-Key, metadata.user_id, conversation_id, or message hash.
-	// Automatic failover is always enabled when bound auth becomes unavailable.
-	SessionAffinity bool `yaml:"session-affinity,omitempty" json:"session-affinity,omitempty"`
-
-	// SessionAffinityTTL specifies how long session-to-auth bindings are retained.
-	// Default: 1h. Accepts duration strings like "30m", "1h", "2h30m".
-	SessionAffinityTTL string `yaml:"session-affinity-ttl,omitempty" json:"session-affinity-ttl,omitempty"`
-
-	// Rules configures request-scoped provider preference rules for mixed-provider routing.
-	Rules []RoutingRule `yaml:"rules,omitempty" json:"rules,omitempty"`
-}
-
-// RoutingRule prefers one provider when the request metadata matches the configured conditions.
-type RoutingRule struct {
-	Provider   string                `yaml:"provider" json:"provider"`
-	UserAgent  RoutingUserAgentRule  `yaml:"user-agent,omitempty" json:"user-agent,omitempty"`
-	InputChars RoutingInputCharsRule `yaml:"input-chars,omitempty" json:"input-chars,omitempty"`
-}
-
-// RoutingUserAgentRule matches downstream request User-Agent values.
-type RoutingUserAgentRule struct {
-	Match string `yaml:"match,omitempty" json:"match,omitempty"`
-	Value string `yaml:"value,omitempty" json:"value,omitempty"`
-}
-
-// RoutingInputCharsRule matches downstream request body character counts.
-type RoutingInputCharsRule struct {
-	Operator string `yaml:"operator,omitempty" json:"operator,omitempty"`
-	Value    int64  `yaml:"value,omitempty" json:"value,omitempty"`
-}
-
-// DefaultTestModelsConfig stores management-center fallback test models by provider.
-type DefaultTestModelsConfig struct {
-	Codex  string `yaml:"codex,omitempty" json:"codex,omitempty"`
-	Claude string `yaml:"claude,omitempty" json:"claude,omitempty"`
-}
-
-// OAuthModelAlias defines a model ID alias for a specific channel.
-// It maps the upstream model name (Name) to the client-visible alias (Alias).
-// When Fork is true, the alias is added as an additional model in listings while
-// keeping the original model ID available.
-type OAuthModelAlias struct {
-	Name  string `yaml:"name" json:"name"`
-	Alias string `yaml:"alias" json:"alias"`
-	Fork  bool   `yaml:"fork,omitempty" json:"fork,omitempty"`
-}
-
-// AmpModelMapping defines a model name mapping for Amp CLI requests.
-// When Amp requests a model that isn't available locally, this mapping
-// allows routing to an alternative model that IS available.
-type AmpModelMapping struct {
-	// From is the model name that Amp CLI requests (e.g., "claude-opus-4.5").
-	From string `yaml:"from" json:"from"`
-
-	// To is the target model name to route to (e.g., "claude-sonnet-4").
-	// The target model must have available providers in the registry.
-	To string `yaml:"to" json:"to"`
-
-	// Regex indicates whether the 'from' field should be interpreted as a regular
-	// expression for matching model names. When true, this mapping is evaluated
-	// after exact matches and in the order provided. Defaults to false (exact match).
-	Regex bool `yaml:"regex,omitempty" json:"regex,omitempty"`
-}
-
-// AmpCode groups Amp CLI integration settings including upstream routing,
-// optional overrides, management route restrictions, and model fallback mappings.
-type AmpCode struct {
-	// UpstreamURL defines the upstream Amp control plane used for non-provider calls.
-	UpstreamURL string `yaml:"upstream-url" json:"upstream-url"`
-
-	// UpstreamAPIKey optionally overrides the Authorization header when proxying Amp upstream calls.
-	UpstreamAPIKey string `yaml:"upstream-api-key" json:"upstream-api-key"`
-
-	// UpstreamAPIKeys maps client API keys (from top-level api-keys) to upstream API keys.
-	// When a request is authenticated with one of the APIKeys, the corresponding UpstreamAPIKey
-	// is used for the upstream Amp request.
-	UpstreamAPIKeys []AmpUpstreamAPIKeyEntry `yaml:"upstream-api-keys,omitempty" json:"upstream-api-keys,omitempty"`
-
-	// RestrictManagementToLocalhost restricts Amp management routes (/api/user, /api/threads, etc.)
-	// to only accept connections from localhost (127.0.0.1, ::1). When true, prevents drive-by
-	// browser attacks and remote access to management endpoints. Default: false (API key auth is sufficient).
-	RestrictManagementToLocalhost bool `yaml:"restrict-management-to-localhost" json:"restrict-management-to-localhost"`
-
-	// ModelMappings defines model name mappings for Amp CLI requests.
-	// When Amp requests a model that isn't available locally, these mappings
-	// allow routing to an alternative model that IS available.
-	ModelMappings []AmpModelMapping `yaml:"model-mappings" json:"model-mappings"`
-
-	// ForceModelMappings when true, model mappings take precedence over local API keys.
-	// When false (default), local API keys are used first if available.
-	ForceModelMappings bool `yaml:"force-model-mappings" json:"force-model-mappings"`
-}
-
-// AmpUpstreamAPIKeyEntry maps a set of client API keys to a specific upstream API key.
-// When a request is authenticated with one of the APIKeys, the corresponding UpstreamAPIKey
-// is used for the upstream Amp request.
-type AmpUpstreamAPIKeyEntry struct {
-	// UpstreamAPIKey is the API key to use when proxying to the Amp upstream.
-	UpstreamAPIKey string `yaml:"upstream-api-key" json:"upstream-api-key"`
-
-	// APIKeys are the client API keys (from top-level api-keys) that map to this upstream key.
-	APIKeys []string `yaml:"api-keys" json:"api-keys"`
-}
-
-// PayloadConfig defines default and override parameter rules applied to provider payloads.
-type PayloadConfig struct {
-	// Default defines rules that only set parameters when they are missing in the payload.
-	Default []PayloadRule `yaml:"default" json:"default"`
-	// DefaultRaw defines rules that set raw JSON values only when they are missing.
-	DefaultRaw []PayloadRule `yaml:"default-raw" json:"default-raw"`
-	// Override defines rules that always set parameters, overwriting any existing values.
-	Override []PayloadRule `yaml:"override" json:"override"`
-	// OverrideRaw defines rules that always set raw JSON values, overwriting any existing values.
-	OverrideRaw []PayloadRule `yaml:"override-raw" json:"override-raw"`
-	// Filter defines rules that remove parameters from the payload by JSON path.
-	Filter []PayloadFilterRule `yaml:"filter" json:"filter"`
-}
-
-// PayloadFilterRule describes a rule to remove specific JSON paths from matching model payloads.
-type PayloadFilterRule struct {
-	// Models lists model entries with name pattern and protocol constraint.
-	Models []PayloadModelRule `yaml:"models" json:"models"`
-	// Params lists JSON paths (gjson/sjson syntax) to remove from the payload.
-	Params []string `yaml:"params" json:"params"`
-}
-
-// PayloadRule describes a single rule targeting a list of models with parameter updates.
-type PayloadRule struct {
-	// Models lists model entries with name pattern and protocol constraint.
-	Models []PayloadModelRule `yaml:"models" json:"models"`
-	// Params maps JSON paths (gjson/sjson syntax) to values written into the payload.
-	// For *-raw rules, values are treated as raw JSON fragments (strings are used as-is).
-	Params map[string]any `yaml:"params" json:"params"`
-}
-
-// PayloadModelRule ties a model name pattern to a specific translator protocol.
-type PayloadModelRule struct {
-	// Name is the model name or wildcard pattern (e.g., "gpt-*", "*-5", "gemini-*-pro").
-	Name string `yaml:"name" json:"name"`
-	// Protocol restricts the rule to a specific translator format (e.g., "gemini", "responses").
-	Protocol string `yaml:"protocol" json:"protocol"`
-}
-
-// CloakConfig configures request cloaking for non-Claude-Code clients.
-// Cloaking disguises API requests to appear as originating from the official Claude Code CLI.
-type CloakConfig struct {
-	// Mode controls cloaking behavior: "auto" (default), "always", or "never".
-	// - "auto": cloak only when client is not Claude Code (based on User-Agent)
-	// - "always": always apply cloaking regardless of client
-	// - "never": never apply cloaking
-	Mode string `yaml:"mode,omitempty" json:"mode,omitempty"`
-
-	// StrictMode controls how system prompts are handled when cloaking.
-	// - false (default): prepend Claude Code prompt to user system messages
-	// - true: strip all user system messages, keep only Claude Code prompt
-	StrictMode bool `yaml:"strict-mode,omitempty" json:"strict-mode,omitempty"`
-
-	// SensitiveWords is a list of words to obfuscate with zero-width characters.
-	// This can help bypass certain content filters.
-	SensitiveWords []string `yaml:"sensitive-words,omitempty" json:"sensitive-words,omitempty"`
-
-	// CacheUserID controls whether Claude user_id values are cached per API key.
-	// When false, a fresh random user_id is generated for every request.
-	CacheUserID *bool `yaml:"cache-user-id,omitempty" json:"cache-user-id,omitempty"`
-}
-
-// ClaudeKey represents the configuration for a Claude API key,
-// including the API key itself and an optional base URL for the API endpoint.
 type ClaudeKey struct {
 	// APIKey is the authentication key for accessing Claude API services.
 	APIKey string `yaml:"api-key" json:"api-key"`
 
 	// Priority controls selection preference when multiple credentials match.
-	// Higher values are preferred; defaults to 10.
-	Priority *int `yaml:"priority,omitempty" json:"priority,omitempty"`
+	// Higher values are preferred; defaults to 0.
+	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
 
 	// Prefix optionally namespaces models for this credential (e.g., "teamA/claude-sonnet-4").
 	Prefix string `yaml:"prefix,omitempty" json:"prefix,omitempty"`
@@ -566,18 +565,6 @@ type ClaudeKey struct {
 	// ProxyURL overrides the global proxy setting for this API key if provided.
 	ProxyURL string `yaml:"proxy-url" json:"proxy-url"`
 
-	// BackoffMode controls how cooldown/backoff applies to this credential.
-	BackoffMode string `yaml:"backoff-mode,omitempty" json:"backoff-mode,omitempty"`
-
-	// RequestRetry overrides the retry count when BackoffMode is custom.
-	RequestRetry *int `yaml:"request-retry,omitempty" json:"request-retry,omitempty"`
-
-	// ErrorControl overrides provider retry behavior for this credential.
-	ErrorControl ErrorControlPolicy `yaml:"error-control,omitempty" json:"error-control,omitempty"`
-
-	// Cooldown overrides count-based failure cooldown for this credential.
-	Cooldown ProviderCooldownConfig `yaml:"cooldown,omitempty" json:"cooldown,omitempty"`
-
 	// Models defines upstream model names and aliases for request routing.
 	Models []ClaudeModel `yaml:"models" json:"models"`
 
@@ -586,6 +573,12 @@ type ClaudeKey struct {
 
 	// ExcludedModels lists model IDs that should be excluded for this provider.
 	ExcludedModels []string `yaml:"excluded-models,omitempty" json:"excluded-models,omitempty"`
+
+	// RebuildMidSystemMessage moves Claude messages with role "system" into the top-level system field.
+	RebuildMidSystemMessage bool `yaml:"rebuild-mid-system-message,omitempty" json:"rebuild-mid-system-message,omitempty"`
+
+	// DisableCooling disables auth/model cooldown scheduling for this credential when true.
+	DisableCooling bool `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
 
 	// Cloak configures request cloaking for non-Claude-Code clients.
 	Cloak *CloakConfig `yaml:"cloak,omitempty" json:"cloak,omitempty"`
@@ -606,10 +599,14 @@ type ClaudeModel struct {
 
 	// Alias is the client-facing model name that maps to Name.
 	Alias string `yaml:"alias" json:"alias"`
+
+	// ForceMapping rewrites upstream response model fields back to Alias.
+	ForceMapping bool `yaml:"force-mapping,omitempty" json:"force-mapping,omitempty"`
 }
 
-func (m ClaudeModel) GetName() string  { return m.Name }
-func (m ClaudeModel) GetAlias() string { return m.Alias }
+func (m ClaudeModel) GetName() string       { return m.Name }
+func (m ClaudeModel) GetAlias() string      { return m.Alias }
+func (m ClaudeModel) GetForceMapping() bool { return m.ForceMapping }
 
 // CodexKey represents the configuration for a Codex API key,
 // including the API key itself and an optional base URL for the API endpoint.
@@ -618,8 +615,8 @@ type CodexKey struct {
 	APIKey string `yaml:"api-key" json:"api-key"`
 
 	// Priority controls selection preference when multiple credentials match.
-	// Higher values are preferred; defaults to 10.
-	Priority *int `yaml:"priority,omitempty" json:"priority,omitempty"`
+	// Higher values are preferred; defaults to 0.
+	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
 
 	// Prefix optionally namespaces models for this credential (e.g., "teamA/gpt-5-codex").
 	Prefix string `yaml:"prefix,omitempty" json:"prefix,omitempty"`
@@ -638,18 +635,6 @@ type CodexKey struct {
 	// ProxyURL overrides the global proxy setting for this API key if provided.
 	ProxyURL string `yaml:"proxy-url" json:"proxy-url"`
 
-	// BackoffMode controls how cooldown/backoff applies to this credential.
-	BackoffMode string `yaml:"backoff-mode,omitempty" json:"backoff-mode,omitempty"`
-
-	// RequestRetry overrides the retry count when BackoffMode is custom.
-	RequestRetry *int `yaml:"request-retry,omitempty" json:"request-retry,omitempty"`
-
-	// ErrorControl overrides provider retry behavior for this credential.
-	ErrorControl ErrorControlPolicy `yaml:"error-control,omitempty" json:"error-control,omitempty"`
-
-	// Cooldown overrides count-based failure cooldown for this credential.
-	Cooldown ProviderCooldownConfig `yaml:"cooldown,omitempty" json:"cooldown,omitempty"`
-
 	// Models defines upstream model names and aliases for request routing.
 	Models []CodexModel `yaml:"models" json:"models"`
 
@@ -658,6 +643,9 @@ type CodexKey struct {
 
 	// ExcludedModels lists model IDs that should be excluded for this provider.
 	ExcludedModels []string `yaml:"excluded-models,omitempty" json:"excluded-models,omitempty"`
+
+	// DisableCooling disables auth/model cooldown scheduling for this credential when true.
+	DisableCooling bool `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
 }
 
 func (k CodexKey) GetAPIKey() string  { return k.APIKey }
@@ -670,10 +658,14 @@ type CodexModel struct {
 
 	// Alias is the client-facing model name that maps to Name.
 	Alias string `yaml:"alias" json:"alias"`
+
+	// ForceMapping rewrites upstream response model fields back to Alias.
+	ForceMapping bool `yaml:"force-mapping,omitempty" json:"force-mapping,omitempty"`
 }
 
-func (m CodexModel) GetName() string  { return m.Name }
-func (m CodexModel) GetAlias() string { return m.Alias }
+func (m CodexModel) GetName() string       { return m.Name }
+func (m CodexModel) GetAlias() string      { return m.Alias }
+func (m CodexModel) GetForceMapping() bool { return m.ForceMapping }
 
 // GeminiKey represents the configuration for a Gemini API key,
 // including optional overrides for upstream base URL, proxy routing, and headers.
@@ -682,8 +674,8 @@ type GeminiKey struct {
 	APIKey string `yaml:"api-key" json:"api-key"`
 
 	// Priority controls selection preference when multiple credentials match.
-	// Higher values are preferred; defaults to 10.
-	Priority *int `yaml:"priority,omitempty" json:"priority,omitempty"`
+	// Higher values are preferred; defaults to 0.
+	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
 
 	// Prefix optionally namespaces models for this credential (e.g., "teamA/gemini-3-pro-preview").
 	Prefix string `yaml:"prefix,omitempty" json:"prefix,omitempty"`
@@ -694,18 +686,6 @@ type GeminiKey struct {
 	// ProxyURL optionally overrides the global proxy for this API key.
 	ProxyURL string `yaml:"proxy-url,omitempty" json:"proxy-url,omitempty"`
 
-	// BackoffMode controls how cooldown/backoff applies to this credential.
-	BackoffMode string `yaml:"backoff-mode,omitempty" json:"backoff-mode,omitempty"`
-
-	// RequestRetry overrides the retry count when BackoffMode is custom.
-	RequestRetry *int `yaml:"request-retry,omitempty" json:"request-retry,omitempty"`
-
-	// ErrorControl overrides provider retry behavior for this credential.
-	ErrorControl ErrorControlPolicy `yaml:"error-control,omitempty" json:"error-control,omitempty"`
-
-	// Cooldown overrides count-based failure cooldown for this credential.
-	Cooldown ProviderCooldownConfig `yaml:"cooldown,omitempty" json:"cooldown,omitempty"`
-
 	// Models defines upstream model names and aliases for request routing.
 	Models []GeminiModel `yaml:"models,omitempty" json:"models,omitempty"`
 
@@ -714,6 +694,9 @@ type GeminiKey struct {
 
 	// ExcludedModels lists model IDs that should be excluded for this provider.
 	ExcludedModels []string `yaml:"excluded-models,omitempty" json:"excluded-models,omitempty"`
+
+	// DisableCooling disables auth/model cooldown scheduling for this credential when true.
+	DisableCooling bool `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
 }
 
 func (k GeminiKey) GetAPIKey() string  { return k.APIKey }
@@ -726,10 +709,14 @@ type GeminiModel struct {
 
 	// Alias is the client-facing model name that maps to Name.
 	Alias string `yaml:"alias" json:"alias"`
+
+	// ForceMapping rewrites upstream response model fields back to Alias.
+	ForceMapping bool `yaml:"force-mapping,omitempty" json:"force-mapping,omitempty"`
 }
 
-func (m GeminiModel) GetName() string  { return m.Name }
-func (m GeminiModel) GetAlias() string { return m.Alias }
+func (m GeminiModel) GetName() string       { return m.Name }
+func (m GeminiModel) GetAlias() string      { return m.Alias }
+func (m GeminiModel) GetForceMapping() bool { return m.ForceMapping }
 
 // OpenAICompatibility represents the configuration for OpenAI API compatibility
 // with external providers, allowing model aliases to be routed through OpenAI API format.
@@ -738,8 +725,11 @@ type OpenAICompatibility struct {
 	Name string `yaml:"name" json:"name"`
 
 	// Priority controls selection preference when multiple providers or credentials match.
-	// Higher values are preferred; defaults to 10.
-	Priority *int `yaml:"priority,omitempty" json:"priority,omitempty"`
+	// Higher values are preferred; defaults to 0.
+	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
+
+	// Disabled prevents this provider from being used for routing.
+	Disabled bool `yaml:"disabled,omitempty" json:"disabled,omitempty"`
 
 	// Prefix optionally namespaces model aliases for this provider (e.g., "teamA/kimi-k2").
 	Prefix string `yaml:"prefix,omitempty" json:"prefix,omitempty"`
@@ -756,17 +746,8 @@ type OpenAICompatibility struct {
 	// Headers optionally adds extra HTTP headers for requests sent to this provider.
 	Headers map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
 
-	// BackoffMode controls how cooldown/backoff applies to this provider.
-	BackoffMode string `yaml:"backoff-mode,omitempty" json:"backoff-mode,omitempty"`
-
-	// RequestRetry overrides the retry count when BackoffMode is custom.
-	RequestRetry *int `yaml:"request-retry,omitempty" json:"request-retry,omitempty"`
-
-	// ErrorControl overrides provider retry behavior for this provider.
-	ErrorControl ErrorControlPolicy `yaml:"error-control,omitempty" json:"error-control,omitempty"`
-
-	// Cooldown overrides count-based failure cooldown for this provider.
-	Cooldown ProviderCooldownConfig `yaml:"cooldown,omitempty" json:"cooldown,omitempty"`
+	// DisableCooling disables auth/model cooldown scheduling for this provider when true.
+	DisableCooling bool `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
 }
 
 // OpenAICompatibilityAPIKey represents an API key configuration with optional proxy setting.
@@ -787,13 +768,20 @@ type OpenAICompatibilityModel struct {
 	// Alias is the model name alias that clients will use to reference this model.
 	Alias string `yaml:"alias" json:"alias"`
 
+	// ForceMapping rewrites upstream response model fields back to Alias.
+	ForceMapping bool `yaml:"force-mapping,omitempty" json:"force-mapping,omitempty"`
+
+	// Image marks this model as callable through /v1/images/generations and /v1/images/edits.
+	Image bool `yaml:"image,omitempty" json:"image,omitempty"`
+
 	// Thinking configures the thinking/reasoning capability for this model.
 	// If nil, the model defaults to level-based reasoning with levels ["low", "medium", "high"].
 	Thinking *registry.ThinkingSupport `yaml:"thinking,omitempty" json:"thinking,omitempty"`
 }
 
-func (m OpenAICompatibilityModel) GetName() string  { return m.Name }
-func (m OpenAICompatibilityModel) GetAlias() string { return m.Alias }
+func (m OpenAICompatibilityModel) GetName() string       { return m.Name }
+func (m OpenAICompatibilityModel) GetAlias() string      { return m.Alias }
+func (m OpenAICompatibilityModel) GetForceMapping() bool { return m.ForceMapping }
 
 // LoadConfig reads a YAML configuration file from the given path,
 // unmarshals it into a Config struct, applies environment variable overrides,
@@ -819,7 +807,9 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 		if optional {
 			if os.IsNotExist(err) || errors.Is(err, syscall.EISDIR) {
 				// Missing and optional: return empty config (cloud deploy standby).
-				return &Config{}, nil
+				cfg := &Config{}
+				cfg.NormalizePluginsConfig()
+				return cfg, nil
 			}
 		}
 		return nil, fmt.Errorf("failed to read config file: %w", err)
@@ -827,7 +817,9 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 
 	// In cloud deploy mode (optional=true), if file is empty or contains only whitespace, return empty config.
 	if optional && len(data) == 0 {
-		return &Config{}, nil
+		cfg := &Config{}
+		cfg.NormalizePluginsConfig()
+		return cfg, nil
 	}
 
 	// Unmarshal the YAML data into the Config struct.
@@ -838,34 +830,24 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.LogsMaxTotalSizeMB = 0
 	cfg.ErrorLogsMaxFiles = 10
 	cfg.UsageStatisticsEnabled = false
+	cfg.RedisUsageQueueRetentionSeconds = 60
 	cfg.DisableCooling = false
+	cfg.SaveCooldownStatus = false
+	cfg.TransientErrorCooldownSeconds = 0
+	cfg.DisableImageGeneration = DisableImageGenerationOff
+	cfg.WebsocketAuth = true
 	cfg.Pprof.Enable = false
 	cfg.Pprof.Addr = DefaultPprofAddr
-	cfg.AmpCode.RestrictManagementToLocalhost = false // Default to false: API key auth is sufficient
 	cfg.RemoteManagement.PanelGitHubRepository = DefaultPanelGitHubRepository
 	if err = yaml.Unmarshal(data, &cfg); err != nil {
 		if optional {
 			// In cloud deploy mode, if YAML parsing fails, return empty config instead of error.
-			return &Config{}, nil
+			cfgOptional := &Config{}
+			cfgOptional.NormalizePluginsConfig()
+			return cfgOptional, nil
 		}
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
 	}
-
-	// NOTE: Startup legacy key migration is intentionally disabled.
-	// Reason: avoid mutating config.yaml during server startup.
-	// Re-enable the block below if automatic startup migration is needed again.
-	// var legacy legacyConfigData
-	// if errLegacy := yaml.Unmarshal(data, &legacy); errLegacy == nil {
-	// 	if cfg.migrateLegacyGeminiKeys(legacy.LegacyGeminiKeys) {
-	// 		cfg.legacyMigrationPending = true
-	// 	}
-	// 	if cfg.migrateLegacyOpenAICompatibilityKeys(legacy.OpenAICompat) {
-	// 		cfg.legacyMigrationPending = true
-	// 	}
-	// 	if cfg.migrateLegacyAmpConfig(&legacy) {
-	// 		cfg.legacyMigrationPending = true
-	// 	}
-	// }
 
 	// Hash remote management key if plaintext is detected (nested)
 	// We consider a value to be already hashed if it looks like a bcrypt hash ($2a$, $2b$, or $2y$ prefix).
@@ -899,8 +881,18 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 		cfg.ErrorLogsMaxFiles = 10
 	}
 
-	cfg.SanitizeErrorControl()
-	cfg.SanitizeProviderCooldown()
+	if cfg.RedisUsageQueueRetentionSeconds <= 0 {
+		cfg.RedisUsageQueueRetentionSeconds = 60
+	} else if cfg.RedisUsageQueueRetentionSeconds > 3600 {
+		log.WithField("value", cfg.RedisUsageQueueRetentionSeconds).Warn("redis-usage-queue-retention-seconds too large; clamping to 3600")
+		cfg.RedisUsageQueueRetentionSeconds = 3600
+	}
+
+	if cfg.MaxRetryCredentials < 0 {
+		cfg.MaxRetryCredentials = 0
+	}
+
+	cfg.NormalizePluginsConfig()
 
 	// Sanitize Gemini API key configuration and migrate legacy entries.
 	cfg.SanitizeGeminiKeys()
@@ -923,8 +915,6 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	// Sanitize OpenAI compatibility providers: drop entries without base-url
 	cfg.SanitizeOpenAICompatibility()
 
-	cfg.applyRoutingDefaults()
-
 	// Normalize OAuth provider model exclusion map.
 	cfg.OAuthExcludedModels = NormalizeOAuthExcludedModels(cfg.OAuthExcludedModels)
 
@@ -934,178 +924,34 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	// Validate raw payload rules and drop invalid entries.
 	cfg.SanitizePayloadRules()
 
-	// NOTE: Legacy migration persistence is intentionally disabled together with
-	// startup legacy migration to keep startup read-only for config.yaml.
-	// Re-enable the block below if automatic startup migration is needed again.
-	// if cfg.legacyMigrationPending {
-	// 	fmt.Println("Detected legacy configuration keys, attempting to persist the normalized config...")
-	// 	if !optional && configFile != "" {
-	// 		if err := SaveConfigPreserveComments(configFile, &cfg); err != nil {
-	// 			return nil, fmt.Errorf("failed to persist migrated legacy config: %w", err)
-	// 		}
-	// 		fmt.Println("Legacy configuration normalized and persisted.")
-	// 	} else {
-	// 		fmt.Println("Legacy configuration normalized in memory; persistence skipped.")
-	// 	}
-	// }
-
 	// Return the populated configuration struct.
 	return &cfg, nil
 }
 
-func (cfg *Config) applyRoutingDefaults() {
+// NormalizePluginsConfig applies default plugin configuration values.
+func (cfg *Config) NormalizePluginsConfig() {
 	if cfg == nil {
 		return
 	}
-	if cfg.AuthFilesGroup.Enabled == nil {
-		cfg.AuthFilesGroup.Enabled = DefaultBoolPtr(true)
+	cfg.Plugins.Dir = strings.TrimSpace(cfg.Plugins.Dir)
+	if cfg.Plugins.Dir == "" {
+		cfg.Plugins.Dir = "plugins"
 	}
-	if cfg.AuthFilesGroup.Priority == nil {
-		cfg.AuthFilesGroup.Priority = DefaultIntPtr(DefaultRoutingPriority)
-	}
-	cfg.AuthFilesGroup.ProxyURL = strings.TrimSpace(cfg.AuthFilesGroup.ProxyURL)
-
-	for i := range cfg.GeminiKey {
-		if cfg.GeminiKey[i].Priority == nil {
-			cfg.GeminiKey[i].Priority = DefaultIntPtr(DefaultRoutingPriority)
-		}
-	}
-	for i := range cfg.ClaudeKey {
-		if cfg.ClaudeKey[i].Priority == nil {
-			cfg.ClaudeKey[i].Priority = DefaultIntPtr(DefaultRoutingPriority)
-		}
-	}
-	for i := range cfg.CodexKey {
-		if cfg.CodexKey[i].Priority == nil {
-			cfg.CodexKey[i].Priority = DefaultIntPtr(DefaultRoutingPriority)
-		}
-	}
-	for i := range cfg.VertexCompatAPIKey {
-		if cfg.VertexCompatAPIKey[i].Priority == nil {
-			cfg.VertexCompatAPIKey[i].Priority = DefaultIntPtr(DefaultRoutingPriority)
-		}
-	}
-	for i := range cfg.OpenAICompatibility {
-		if cfg.OpenAICompatibility[i].Priority == nil {
-			cfg.OpenAICompatibility[i].Priority = DefaultIntPtr(DefaultRoutingPriority)
-		}
-	}
-}
-
-// ApplyRoutingDefaults normalizes default routing-related settings on the config.
-func (cfg *Config) ApplyRoutingDefaults() {
-	cfg.applyRoutingDefaults()
-}
-
-// SanitizeErrorControl normalizes retry control policy values.
-func (cfg *Config) SanitizeErrorControl() {
-	if cfg == nil {
-		return
-	}
-	cfg.ErrorControl.Default = sanitizeErrorControlPolicy(cfg.ErrorControl.Default)
-	if len(cfg.ErrorControl.Providers) > 0 {
-		normalized := make(map[string]ErrorControlPolicy, len(cfg.ErrorControl.Providers))
-		for provider, policy := range cfg.ErrorControl.Providers {
-			key := strings.ToLower(strings.TrimSpace(provider))
-			if key == "" {
+	if len(cfg.Plugins.StoreSources) > 0 {
+		sources := make([]string, 0, len(cfg.Plugins.StoreSources))
+		for _, source := range cfg.Plugins.StoreSources {
+			source = strings.TrimSpace(source)
+			if source == "" {
 				continue
 			}
-			normalized[key] = sanitizeErrorControlPolicy(policy)
+			sources = append(sources, source)
 		}
-		cfg.ErrorControl.Providers = normalized
+		cfg.Plugins.StoreSources = sources
 	}
-	for i := range cfg.GeminiKey {
-		cfg.GeminiKey[i].ErrorControl = sanitizeErrorControlPolicy(cfg.GeminiKey[i].ErrorControl)
+	cfg.Plugins.StoreAuth = sdkpluginstore.NormalizeAuthConfigs(cfg.Plugins.StoreAuth)
+	if cfg.Plugins.Configs == nil {
+		cfg.Plugins.Configs = map[string]PluginInstanceConfig{}
 	}
-	for i := range cfg.ClaudeKey {
-		cfg.ClaudeKey[i].ErrorControl = sanitizeErrorControlPolicy(cfg.ClaudeKey[i].ErrorControl)
-	}
-	for i := range cfg.CodexKey {
-		cfg.CodexKey[i].ErrorControl = sanitizeErrorControlPolicy(cfg.CodexKey[i].ErrorControl)
-	}
-	for i := range cfg.OpenAICompatibility {
-		cfg.OpenAICompatibility[i].ErrorControl = sanitizeErrorControlPolicy(cfg.OpenAICompatibility[i].ErrorControl)
-	}
-}
-
-func sanitizeErrorControlPolicy(policy ErrorControlPolicy) ErrorControlPolicy {
-	if policy.RetryRounds != nil {
-		value := *policy.RetryRounds
-		if value < 1 {
-			value = 1
-		}
-		policy.RetryRounds = DefaultIntPtr(value)
-	}
-	if policy.RoundBackoffBase != nil {
-		value := *policy.RoundBackoffBase
-		if value <= 0 {
-			value = 1
-		}
-		policy.RoundBackoffBase = DefaultFloatPtr(value)
-	}
-	if policy.RoundBackoffExponent != nil {
-		value := *policy.RoundBackoffExponent
-		if value <= 0 {
-			value = 2
-		}
-		policy.RoundBackoffExponent = DefaultFloatPtr(value)
-	}
-	if policy.RoundBackoffMax != nil {
-		value := *policy.RoundBackoffMax
-		if value <= 0 {
-			value = 60
-		}
-		policy.RoundBackoffMax = DefaultFloatPtr(value)
-	}
-	return policy
-}
-
-// SanitizeProviderCooldown normalizes count-based provider cooldown values.
-func (cfg *Config) SanitizeProviderCooldown() {
-	if cfg == nil {
-		return
-	}
-	cfg.ProviderCooldown = sanitizeProviderCooldownConfig(cfg.ProviderCooldown)
-	for i := range cfg.GeminiKey {
-		cfg.GeminiKey[i].Cooldown = sanitizeProviderCooldownConfig(cfg.GeminiKey[i].Cooldown)
-	}
-	for i := range cfg.ClaudeKey {
-		cfg.ClaudeKey[i].Cooldown = sanitizeProviderCooldownConfig(cfg.ClaudeKey[i].Cooldown)
-	}
-	for i := range cfg.CodexKey {
-		cfg.CodexKey[i].Cooldown = sanitizeProviderCooldownConfig(cfg.CodexKey[i].Cooldown)
-	}
-	for i := range cfg.OpenAICompatibility {
-		cfg.OpenAICompatibility[i].Cooldown = sanitizeProviderCooldownConfig(cfg.OpenAICompatibility[i].Cooldown)
-	}
-	for i := range cfg.VertexCompatAPIKey {
-		cfg.VertexCompatAPIKey[i].Cooldown = sanitizeProviderCooldownConfig(cfg.VertexCompatAPIKey[i].Cooldown)
-	}
-}
-
-func sanitizeProviderCooldownConfig(policy ProviderCooldownConfig) ProviderCooldownConfig {
-	if policy.Start != nil {
-		value := *policy.Start
-		if value < 1 {
-			value = DefaultProviderCooldownStart
-		}
-		policy.Start = DefaultIntPtr(value)
-	}
-	if policy.Exponent != nil {
-		value := *policy.Exponent
-		if value <= 0 {
-			value = DefaultProviderCooldownExponent
-		}
-		policy.Exponent = DefaultFloatPtr(value)
-	}
-	if policy.Max != nil {
-		value := *policy.Max
-		if value < 1 {
-			value = DefaultProviderCooldownMax
-		}
-		policy.Max = DefaultIntPtr(value)
-	}
-	return policy
 }
 
 // SanitizePayloadRules validates raw JSON payload rule params and drops invalid rules.
@@ -1216,7 +1062,7 @@ func (cfg *Config) SanitizeOAuthModelAlias() {
 				continue
 			}
 			seenAlias[aliasKey] = struct{}{}
-			clean = append(clean, OAuthModelAlias{Name: name, Alias: alias, Fork: entry.Fork})
+			clean = append(clean, OAuthModelAlias{Name: name, Alias: alias, Fork: entry.Fork, ForceMapping: entry.ForceMapping})
 		}
 		if len(clean) > 0 {
 			out[channel] = clean
@@ -1239,7 +1085,6 @@ func (cfg *Config) SanitizeOpenAICompatibility() {
 		e.Prefix = normalizeModelPrefix(e.Prefix)
 		e.BaseURL = strings.TrimSpace(e.BaseURL)
 		e.Headers = NormalizeHeaders(e.Headers)
-		e.Cooldown = sanitizeProviderCooldownConfig(e.Cooldown)
 		if e.BaseURL == "" {
 			// Skip providers with no base-url; treated as removed
 			continue
@@ -1262,7 +1107,6 @@ func (cfg *Config) SanitizeCodexKeys() {
 		e.BaseURL = strings.TrimSpace(e.BaseURL)
 		e.Headers = NormalizeHeaders(e.Headers)
 		e.ExcludedModels = NormalizeExcludedModels(e.ExcludedModels)
-		e.Cooldown = sanitizeProviderCooldownConfig(e.Cooldown)
 		if e.BaseURL == "" {
 			continue
 		}
@@ -1281,7 +1125,6 @@ func (cfg *Config) SanitizeClaudeKeys() {
 		entry.Prefix = normalizeModelPrefix(entry.Prefix)
 		entry.Headers = NormalizeHeaders(entry.Headers)
 		entry.ExcludedModels = NormalizeExcludedModels(entry.ExcludedModels)
-		entry.Cooldown = sanitizeProviderCooldownConfig(entry.Cooldown)
 	}
 }
 
@@ -1305,7 +1148,6 @@ func (cfg *Config) SanitizeGeminiKeys() {
 		entry.ProxyURL = strings.TrimSpace(entry.ProxyURL)
 		entry.Headers = NormalizeHeaders(entry.Headers)
 		entry.ExcludedModels = NormalizeExcludedModels(entry.ExcludedModels)
-		entry.Cooldown = sanitizeProviderCooldownConfig(entry.Cooldown)
 		uniqueKey := entry.APIKey + "|" + entry.BaseURL
 		if _, exists := seen[uniqueKey]; exists {
 			continue
@@ -1452,12 +1294,12 @@ func SaveConfigPreserveComments(configFile string, cfg *Config) error {
 	// Remove deprecated sections before merging back the sanitized config.
 	removeLegacyAuthBlock(original.Content[0])
 	removeLegacyOpenAICompatAPIKeys(original.Content[0])
-	removeLegacyAmpKeys(original.Content[0])
+	removeRemovedIntegrationKeys(original.Content[0])
 	removeLegacyGenerativeLanguageKeys(original.Content[0])
 
-	pruneMappingToGeneratedKeys(original.Content[0], generated.Content[0], "auth-files-group")
 	pruneMappingToGeneratedKeys(original.Content[0], generated.Content[0], "oauth-excluded-models")
 	pruneMappingToGeneratedKeys(original.Content[0], generated.Content[0], "oauth-model-alias")
+	pruneMappingToGeneratedKeys(original.Content[0], generated.Content[0], "plugins", "configs")
 
 	// Merge generated into original in-place, preserving comments/order of existing nodes.
 	mergeMappingPreserve(original.Content[0], generated.Content[0])
@@ -1733,8 +1575,10 @@ func isKnownDefaultValue(path []string, node *yaml.Node) bool {
 			return node.Value == DefaultPprofAddr
 		case "remote-management.panel-github-repository":
 			return node.Value == DefaultPanelGitHubRepository
+		case "plugins.dir":
+			return node.Value == "plugins"
 		case "routing.strategy":
-			return node.Value == "random"
+			return node.Value == "round-robin"
 		}
 	}
 
@@ -1834,14 +1678,25 @@ func isZeroValueNode(node *yaml.Node) bool {
 
 // deepCopyNode creates a deep copy of a yaml.Node graph.
 func deepCopyNode(n *yaml.Node) *yaml.Node {
+	return deepCopyNodeSeen(n, map[*yaml.Node]*yaml.Node{})
+}
+
+func deepCopyNodeSeen(n *yaml.Node, seen map[*yaml.Node]*yaml.Node) *yaml.Node {
 	if n == nil {
 		return nil
 	}
+	if cp, ok := seen[n]; ok {
+		return cp
+	}
 	cp := *n
+	seen[n] = &cp
+	if n.Alias != nil {
+		cp.Alias = deepCopyNodeSeen(n.Alias, seen)
+	}
 	if len(n.Content) > 0 {
 		cp.Content = make([]*yaml.Node, len(n.Content))
 		for i := range n.Content {
-			cp.Content[i] = deepCopyNode(n.Content[i])
+			cp.Content[i] = deepCopyNodeSeen(n.Content[i], seen)
 		}
 	}
 	return &cp
@@ -2026,8 +1881,41 @@ func removeMapKey(mapNode *yaml.Node, key string) {
 	}
 }
 
-func pruneMappingToGeneratedKeys(dstRoot, srcRoot *yaml.Node, key string) {
-	if key == "" || dstRoot == nil || srcRoot == nil {
+func pruneMappingToGeneratedKeys(dstRoot, srcRoot *yaml.Node, keyPath ...string) {
+	if len(keyPath) == 0 || dstRoot == nil || srcRoot == nil {
+		return
+	}
+	if len(keyPath) > 1 {
+		dstParent := dstRoot
+		srcParent := srcRoot
+		for _, key := range keyPath[:len(keyPath)-1] {
+			if key == "" || dstParent == nil || dstParent.Kind != yaml.MappingNode {
+				return
+			}
+			dstIdx := findMapKeyIndex(dstParent, key)
+			if dstIdx < 0 || dstIdx+1 >= len(dstParent.Content) {
+				return
+			}
+			dstParent = dstParent.Content[dstIdx+1]
+
+			if srcParent != nil && srcParent.Kind == yaml.MappingNode {
+				srcIdx := findMapKeyIndex(srcParent, key)
+				if srcIdx >= 0 && srcIdx+1 < len(srcParent.Content) {
+					srcParent = srcParent.Content[srcIdx+1]
+				} else {
+					srcParent = nil
+				}
+			}
+		}
+		if srcParent == nil || srcParent.Kind != yaml.MappingNode {
+			removeMapKey(dstParent, keyPath[len(keyPath)-1])
+			return
+		}
+		pruneMappingToGeneratedKeys(dstParent, srcParent, keyPath[len(keyPath)-1])
+		return
+	}
+	key := keyPath[0]
+	if key == "" {
 		return
 	}
 	if dstRoot.Kind != yaml.MappingNode || srcRoot.Kind != yaml.MappingNode {
@@ -2127,154 +2015,6 @@ func normalizeCollectionNodeStyles(node *yaml.Node) {
 	}
 }
 
-// Legacy migration helpers (move deprecated config keys into structured fields).
-type legacyConfigData struct {
-	LegacyGeminiKeys      []string                    `yaml:"generative-language-api-key"`
-	OpenAICompat          []legacyOpenAICompatibility `yaml:"openai-compatibility"`
-	AmpUpstreamURL        string                      `yaml:"amp-upstream-url"`
-	AmpUpstreamAPIKey     string                      `yaml:"amp-upstream-api-key"`
-	AmpRestrictManagement *bool                       `yaml:"amp-restrict-management-to-localhost"`
-	AmpModelMappings      []AmpModelMapping           `yaml:"amp-model-mappings"`
-}
-
-type legacyOpenAICompatibility struct {
-	Name    string   `yaml:"name"`
-	BaseURL string   `yaml:"base-url"`
-	APIKeys []string `yaml:"api-keys"`
-}
-
-func (cfg *Config) migrateLegacyGeminiKeys(legacy []string) bool {
-	if cfg == nil || len(legacy) == 0 {
-		return false
-	}
-	changed := false
-	seen := make(map[string]struct{}, len(cfg.GeminiKey))
-	for i := range cfg.GeminiKey {
-		key := strings.TrimSpace(cfg.GeminiKey[i].APIKey)
-		if key == "" {
-			continue
-		}
-		seen[key] = struct{}{}
-	}
-	for _, raw := range legacy {
-		key := strings.TrimSpace(raw)
-		if key == "" {
-			continue
-		}
-		if _, exists := seen[key]; exists {
-			continue
-		}
-		cfg.GeminiKey = append(cfg.GeminiKey, GeminiKey{APIKey: key})
-		seen[key] = struct{}{}
-		changed = true
-	}
-	return changed
-}
-
-func (cfg *Config) migrateLegacyOpenAICompatibilityKeys(legacy []legacyOpenAICompatibility) bool {
-	if cfg == nil || len(cfg.OpenAICompatibility) == 0 || len(legacy) == 0 {
-		return false
-	}
-	changed := false
-	for _, legacyEntry := range legacy {
-		if len(legacyEntry.APIKeys) == 0 {
-			continue
-		}
-		target := findOpenAICompatTarget(cfg.OpenAICompatibility, legacyEntry.Name, legacyEntry.BaseURL)
-		if target == nil {
-			continue
-		}
-		if mergeLegacyOpenAICompatAPIKeys(target, legacyEntry.APIKeys) {
-			changed = true
-		}
-	}
-	return changed
-}
-
-func mergeLegacyOpenAICompatAPIKeys(entry *OpenAICompatibility, keys []string) bool {
-	if entry == nil || len(keys) == 0 {
-		return false
-	}
-	changed := false
-	existing := make(map[string]struct{}, len(entry.APIKeyEntries))
-	for i := range entry.APIKeyEntries {
-		key := strings.TrimSpace(entry.APIKeyEntries[i].APIKey)
-		if key == "" {
-			continue
-		}
-		existing[key] = struct{}{}
-	}
-	for _, raw := range keys {
-		key := strings.TrimSpace(raw)
-		if key == "" {
-			continue
-		}
-		if _, ok := existing[key]; ok {
-			continue
-		}
-		entry.APIKeyEntries = append(entry.APIKeyEntries, OpenAICompatibilityAPIKey{APIKey: key})
-		existing[key] = struct{}{}
-		changed = true
-	}
-	return changed
-}
-
-func findOpenAICompatTarget(entries []OpenAICompatibility, legacyName, legacyBase string) *OpenAICompatibility {
-	nameKey := strings.ToLower(strings.TrimSpace(legacyName))
-	baseKey := strings.ToLower(strings.TrimSpace(legacyBase))
-	if nameKey != "" && baseKey != "" {
-		for i := range entries {
-			if strings.ToLower(strings.TrimSpace(entries[i].Name)) == nameKey &&
-				strings.ToLower(strings.TrimSpace(entries[i].BaseURL)) == baseKey {
-				return &entries[i]
-			}
-		}
-	}
-	if baseKey != "" {
-		for i := range entries {
-			if strings.ToLower(strings.TrimSpace(entries[i].BaseURL)) == baseKey {
-				return &entries[i]
-			}
-		}
-	}
-	if nameKey != "" {
-		for i := range entries {
-			if strings.ToLower(strings.TrimSpace(entries[i].Name)) == nameKey {
-				return &entries[i]
-			}
-		}
-	}
-	return nil
-}
-
-func (cfg *Config) migrateLegacyAmpConfig(legacy *legacyConfigData) bool {
-	if cfg == nil || legacy == nil {
-		return false
-	}
-	changed := false
-	if cfg.AmpCode.UpstreamURL == "" {
-		if val := strings.TrimSpace(legacy.AmpUpstreamURL); val != "" {
-			cfg.AmpCode.UpstreamURL = val
-			changed = true
-		}
-	}
-	if cfg.AmpCode.UpstreamAPIKey == "" {
-		if val := strings.TrimSpace(legacy.AmpUpstreamAPIKey); val != "" {
-			cfg.AmpCode.UpstreamAPIKey = val
-			changed = true
-		}
-	}
-	if legacy.AmpRestrictManagement != nil {
-		cfg.AmpCode.RestrictManagementToLocalhost = *legacy.AmpRestrictManagement
-		changed = true
-	}
-	if len(cfg.AmpCode.ModelMappings) == 0 && len(legacy.AmpModelMappings) > 0 {
-		cfg.AmpCode.ModelMappings = append([]AmpModelMapping(nil), legacy.AmpModelMappings...)
-		changed = true
-	}
-	return changed
-}
-
 func removeLegacyOpenAICompatAPIKeys(root *yaml.Node) {
 	if root == nil || root.Kind != yaml.MappingNode {
 		return
@@ -2294,10 +2034,11 @@ func removeLegacyOpenAICompatAPIKeys(root *yaml.Node) {
 	}
 }
 
-func removeLegacyAmpKeys(root *yaml.Node) {
+func removeRemovedIntegrationKeys(root *yaml.Node) {
 	if root == nil || root.Kind != yaml.MappingNode {
 		return
 	}
+	removeMapKey(root, "ampcode")
 	removeMapKey(root, "amp-upstream-url")
 	removeMapKey(root, "amp-upstream-api-key")
 	removeMapKey(root, "amp-restrict-management-to-localhost")

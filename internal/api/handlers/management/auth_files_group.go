@@ -5,7 +5,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 )
 
 type authFilesGroupRequest struct {
@@ -18,7 +18,6 @@ func authFilesGroupPayload(cfg *config.Config) gin.H {
 	if cfg == nil {
 		cfg = &config.Config{}
 	}
-	cfg.ApplyRoutingDefaults()
 	return gin.H{
 		"enabled":   config.EffectiveBool(cfg.AuthFilesGroup.Enabled, true),
 		"priority":  config.EffectivePriority(cfg.AuthFilesGroup.Priority),
@@ -57,7 +56,6 @@ func (h *Handler) updateAuthFilesGroup(c *gin.Context, replace bool) {
 	if h.cfg == nil {
 		h.cfg = &config.Config{}
 	}
-	h.cfg.ApplyRoutingDefaults()
 
 	if replace || req.Enabled != nil {
 		enabled := config.EffectiveBool(req.Enabled, true)
@@ -79,6 +77,5 @@ func (h *Handler) updateAuthFilesGroup(c *gin.Context, replace bool) {
 		h.cfg.AuthFilesGroup.ProxyURL = proxyURL
 	}
 
-	h.cfg.ApplyRoutingDefaults()
 	h.persistLocked(c)
 }
