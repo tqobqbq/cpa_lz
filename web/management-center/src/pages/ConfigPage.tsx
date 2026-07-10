@@ -1,4 +1,4 @@
-import { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { createPortal } from 'react-dom';
 import type { ReactCodeMirrorRef } from '@uiw/react-codemirror';
@@ -16,6 +16,8 @@ import {
 import { VisualConfigEditor } from '@/components/config/VisualConfigEditor';
 import { DiffModal } from '@/components/config/DiffModal';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
+import { useActionBarHeightVar } from '@/hooks/useActionBarHeightVar';
+import { useUnsavedChangesGuard } from '@/hooks/useUnsavedChangesGuard';
 import { useVisualConfig } from '@/hooks/useVisualConfig';
 import { useNotificationStore, useAuthStore, useThemeStore, useConfigStore } from '@/stores';
 import { configFileApi } from '@/services/api/configFile';
@@ -32,6 +34,15 @@ function readCommercialModeFromYaml(yamlContent: string): boolean {
     return Boolean((parsed as Record<string, unknown>)['commercial-mode']);
   } catch {
     return false;
+  }
+}
+
+function normalizeYamlForVisualDiff(yamlContent: string): string {
+  try {
+    const doc = parseDocument(yamlContent);
+    return doc.toString({ indent: 2, lineWidth: 120, minContentWidth: 0 });
+  } catch {
+    return yamlContent;
   }
 }
 
@@ -88,6 +99,21 @@ export function ConfigPage() {
   const hasVisualValidationErrors =
     activeTab === 'visual' &&
     (Object.values(visualValidationErrors).some(Boolean) || visualHasPayloadValidationErrors);
+  const unsavedChangesDialog = useMemo(
+    () => ({
+      title: t('common.unsaved_changes_title'),
+      message: t('common.unsaved_changes_message'),
+      confirmText: t('common.confirm'),
+      cancelText: t('common.cancel'),
+    }),
+    [t]
+  );
+
+  useUnsavedChangesGuard({
+    enabled: isCurrentLayer,
+    shouldBlock: isDirty,
+    dialog: unsavedChangesDialog,
+  });
 
   const loadConfig = useCallback(async () => {
     setLoading(true);
@@ -178,6 +204,8 @@ export function ConfigPage() {
     try {
       const latestServerYaml = await configFileApi.fetchConfigYaml();
 
+      const visualBaseYaml = dirty ? content : latestServerYaml;
+
       if (activeTab !== 'source') {
         const latestDocument = parseDocument(latestServerYaml);
         if (latestDocument.errors.length > 0) {
@@ -191,23 +219,34 @@ export function ConfigPage() {
           );
           return;
         }
+
+        if (visualBaseYaml !== latestServerYaml) {
+          const visualBaseDocument = parseDocument(visualBaseYaml);
+          if (visualBaseDocument.errors.length > 0) {
+            showNotification(
+              t('config_management.visual_mode_latest_yaml_invalid', {
+                message:
+                  visualBaseDocument.errors[0]?.message ??
+                  t('config_management.visual_mode_save_blocked'),
+              }),
+              'error'
+            );
+            return;
+          }
+        }
       }
 
-      // In source mode, save exactly what the user edited. In visual mode, materialize visual changes into the latest YAML.
+      // In source mode, save exactly what the user edited. In visual mode, preserve the
+      // local source draft when it has unsaved edits so source-only backend fields are not dropped.
       const nextMergedYaml =
-        activeTab === 'source' ? content : applyVisualChangesToYaml(latestServerYaml);
+        activeTab === 'source' ? content : applyVisualChangesToYaml(visualBaseYaml);
 
       // In visual mode, applyVisualChangesToYaml re-serializes YAML via parseDocument → toString,
       // which may reformat comments/whitespace. Normalize the server YAML through the same pipeline
       // so the diff only shows actual value changes, not cosmetic reformatting.
       let diffOriginal = latestServerYaml;
       if (activeTab !== 'source') {
-        try {
-          const doc = parseDocument(latestServerYaml);
-          diffOriginal = doc.toString({ indent: 2, lineWidth: 120, minContentWidth: 0 });
-        } catch {
-          /* keep raw on parse failure */
-        }
+        diffOriginal = normalizeYamlForVisualDiff(latestServerYaml);
       }
 
       if (diffOriginal === nextMergedYaml) {
@@ -380,29 +419,11 @@ export function ConfigPage() {
   }, [lastSearchedQuery, performSearch]);
 
   // Keep bottom floating actions from covering page content by syncing its height to a CSS variable.
-  useLayoutEffect(() => {
-    if (typeof window === 'undefined' || !shouldRenderFloatingActions) return;
-
-    const actionsEl = floatingActionsRef.current;
-    if (!actionsEl) return;
-
-    const updatePadding = () => {
-      const height = actionsEl.getBoundingClientRect().height;
-      document.documentElement.style.setProperty('--config-action-bar-height', `${height}px`);
-    };
-
-    updatePadding();
-    window.addEventListener('resize', updatePadding);
-
-    const ro = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(updatePadding);
-    ro?.observe(actionsEl);
-
-    return () => {
-      ro?.disconnect();
-      window.removeEventListener('resize', updatePadding);
-      document.documentElement.style.removeProperty('--config-action-bar-height');
-    };
-  }, [shouldRenderFloatingActions]);
+  useActionBarHeightVar(
+    floatingActionsRef,
+    '--config-action-bar-height',
+    shouldRenderFloatingActions
+  );
 
   // Status text
   const getStatusText = () => {
@@ -500,26 +521,11 @@ export function ConfigPage() {
     </div>
   );
 
-  const pageEyebrow =
-    activeTab === 'visual'
-      ? t('config_management.tabs.visual', { defaultValue: '可视化编辑' })
-      : t('config_management.tabs.source', { defaultValue: '源文件编辑' });
-  const pageDescription =
-    activeTab === 'visual'
-      ? t('config_management.visual.notice')
-      : t('config_management.description');
-
   return (
     <div className={styles.container}>
       <div className={styles.pageHeader}>
         <div className={styles.pageHeaderCopy}>
-          <span className={styles.pageEyebrow}>{pageEyebrow}</span>
           <h1 className={styles.pageTitle}>{t('config_management.title')}</h1>
-          <p className={styles.description}>{pageDescription}</p>
-        </div>
-
-        <div className={styles.pageMeta}>
-          <div className={`${styles.statusBadge} ${getStatusClass()}`}>{getStatusText()}</div>
           <div className={styles.tabBar}>
             <button
               type="button"

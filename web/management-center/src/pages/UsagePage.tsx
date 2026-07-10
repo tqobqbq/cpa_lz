@@ -1,5 +1,6 @@
 import { useState, useMemo, useCallback, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useNavigate } from 'react-router-dom';
 import {
   Chart as ChartJS,
   CategoryScale,
@@ -42,7 +43,6 @@ import {
   filterUsageDetailsByTimeRange,
   type UsageTimeRange
 } from '@/utils/usage';
-import { requestAiProviderEditModalOpen } from '@/utils/aiProviderEditModal';
 import styles from './UsagePage.module.scss';
 
 // Register Chart.js components
@@ -120,6 +120,7 @@ const loadTimeRange = (): UsageTimeRange => {
 
 export function UsagePage() {
   const { t } = useTranslation();
+  const navigate = useNavigate();
   const isMobile = useMediaQuery('(max-width: 768px)');
   const resolvedTheme = useThemeStore((state) => state.resolvedTheme);
   const isDark = resolvedTheme === 'dark';
@@ -385,7 +386,7 @@ export function UsagePage() {
           vertexConfigs={config?.vertexApiKeys || []}
           openaiProviders={config?.openaiCompatibility || []}
           modelPrices={modelPrices}
-          onEditSource={requestAiProviderEditModalOpen}
+          onEditSource={(path) => navigate(path)}
         />
       </div>
 
@@ -398,7 +399,7 @@ export function UsagePage() {
         vertexConfigs={config?.vertexApiKeys || []}
         openaiProviders={config?.openaiCompatibility || []}
         modelPrices={modelPrices}
-        onEditSource={requestAiProviderEditModalOpen}
+        onEditSource={(path) => navigate(path)}
       />
 
       <RoutingRulesCard usage={usage} loading={loading} />

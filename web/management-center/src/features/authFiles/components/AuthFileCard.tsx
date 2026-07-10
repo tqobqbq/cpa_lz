@@ -7,14 +7,18 @@ import {
   IconDownload,
   IconInfo,
   IconModelCluster,
-  IconRefreshCw,
   IconSettings,
   IconTrash2,
 } from '@/components/ui/icons';
 import { ProviderStatusBar } from '@/components/providers/ProviderStatusBar';
 import type { AuthFileItem } from '@/types';
 import { resolveAuthProvider } from '@/utils/quota';
-import { calculateStatusBarData, normalizeAuthIndex, type KeyStats } from '@/utils/usage';
+import {
+  normalizeRecentRequestAuthIndex,
+  normalizeRecentRequestBuckets,
+  normalizeUsageTotal,
+  statusBarDataFromRecentRequests,
+} from '@/utils/recentRequests';
 import { formatFileSize } from '@/utils/format';
 import {
   QUOTA_PROVIDER_TYPES,
@@ -24,8 +28,8 @@ import {
   getTypeColor,
   getTypeLabel,
   isRuntimeOnlyAuthFile,
+  normalizeProviderKey,
   parsePriorityValue,
-  resolveAuthFileStats,
   type QuotaProviderType,
   type ResolvedTheme,
 } from '@/features/authFiles/constants';
@@ -43,11 +47,9 @@ export type AuthFileCardProps = {
   disableControls: boolean;
   deleting: string | null;
   statusUpdating: Record<string, boolean>;
-  quotaRefreshing: Record<string, boolean>;
-  keyStats: KeyStats;
+  quotaFilterType: QuotaProviderType | null;
   statusBarCache: Map<string, AuthFileStatusBarData>;
   onShowModels: (file: AuthFileItem) => void;
-  onRefreshQuota: (file: AuthFileItem) => void;
   onDownload: (name: string) => void;
   onOpenPrefixProxyEditor: (file: AuthFileItem) => void;
   onDelete: (name: string) => void;
@@ -71,11 +73,9 @@ export function AuthFileCard(props: AuthFileCardProps) {
     disableControls,
     deleting,
     statusUpdating,
-    quotaRefreshing,
-    keyStats,
+    quotaFilterType,
     statusBarCache,
     onShowModels,
-    onRefreshQuota,
     onDownload,
     onOpenPrefixProxyEditor,
     onDelete,
@@ -83,17 +83,23 @@ export function AuthFileCard(props: AuthFileCardProps) {
     onToggleSelect,
   } = props;
 
-  const fileStats = resolveAuthFileStats(file, keyStats);
+  const recentBuckets = normalizeRecentRequestBuckets(file.recent_requests ?? file.recentRequests);
+  const fileStats = {
+    success: normalizeUsageTotal(file.success),
+    failure: normalizeUsageTotal(file.failed),
+  };
   const isRuntimeOnly = isRuntimeOnlyAuthFile(file);
-  const isAistudio = (file.type || '').toLowerCase() === 'aistudio';
+  const providerKey = normalizeProviderKey(String(file.type ?? file.provider ?? 'unknown'));
+  const isAistudio = providerKey === 'aistudio';
   const showModelsButton = !isRuntimeOnly || isAistudio;
-  const typeColor = getTypeColor(file.type || 'unknown', resolvedTheme);
-  const typeLabel = getTypeLabel(t, file.type || 'unknown');
-  const providerIcon = getAuthFileIcon(file.type || 'unknown', resolvedTheme);
+  const typeColor = getTypeColor(providerKey, resolvedTheme);
+  const typeLabel = getTypeLabel(t, providerKey);
+  const providerIcon = getAuthFileIcon(providerKey, resolvedTheme);
 
-  const quotaType = resolveQuotaType(file);
-  const canRefreshQuota = Boolean(quotaType) && !isRuntimeOnly;
-  const quotaRefreshLoading = quotaRefreshing[file.name] === true;
+  const quotaType =
+    quotaFilterType && resolveQuotaType(file) === quotaFilterType ? quotaFilterType : null;
+
+  const showQuotaLayout = Boolean(quotaType) && !isRuntimeOnly && !compact;
 
   const providerCardClass =
     quotaType === 'antigravity'
@@ -102,16 +108,17 @@ export function AuthFileCard(props: AuthFileCardProps) {
         ? styles.claudeCard
         : quotaType === 'codex'
           ? styles.codexCard
-          : quotaType === 'gemini-cli'
-            ? styles.geminiCliCard
-            : quotaType === 'kimi'
-              ? styles.kimiCard
+          : quotaType === 'kimi'
+            ? styles.kimiCard
+            : quotaType === 'xai'
+              ? styles.xaiCard
               : '';
 
   const rawAuthIndex = file['auth_index'] ?? file.authIndex;
-  const authIndexKey = normalizeAuthIndex(rawAuthIndex);
+  const authIndexKey = normalizeRecentRequestAuthIndex(rawAuthIndex);
   const statusData =
-    (authIndexKey && statusBarCache.get(authIndexKey)) || calculateStatusBarData([]);
+    (authIndexKey && statusBarCache.get(authIndexKey)) ||
+    statusBarDataFromRecentRequests(recentBuckets);
   const rawStatusMessage = getAuthFileStatusMessage(file);
   const hasStatusWarning =
     Boolean(rawStatusMessage) && !HEALTHY_STATUS_MESSAGES.has(rawStatusMessage.toLowerCase());
@@ -242,7 +249,13 @@ export function AuthFileCard(props: AuthFileCardProps) {
               <ProviderStatusBar statusData={statusData} styles={styles} />
             </div>
 
-            {canRefreshQuota && quotaType && <AuthFileQuotaSection file={file} quotaType={quotaType} />}
+            {showQuotaLayout && quotaType && (
+              <AuthFileQuotaSection
+                file={file}
+                quotaType={quotaType}
+                disableControls={disableControls}
+              />
+            )}
           </div>
 
           <div className={styles.cardActions}>
@@ -268,23 +281,6 @@ export function AuthFileCard(props: AuthFileCardProps) {
               )}
               {!isRuntimeOnly && (
                 <div className={styles.cardUtilityActions}>
-                  {canRefreshQuota && (
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      onClick={() => onRefreshQuota(file)}
-                      className={styles.iconButton}
-                      title={t('auth_files.quota_refresh_single')}
-                      aria-label={t('auth_files.quota_refresh_single')}
-                      disabled={disableControls || quotaRefreshLoading}
-                    >
-                      {quotaRefreshLoading ? (
-                        <LoadingSpinner size={14} />
-                      ) : (
-                        <IconRefreshCw className={styles.actionIcon} size={16} />
-                      )}
-                    </Button>
-                  )}
                   <Button
                     variant="secondary"
                     size="sm"

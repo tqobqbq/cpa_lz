@@ -15,26 +15,20 @@ import { animate } from 'motion/mini';
 import type { AnimationPlaybackControlsWithThen } from 'motion-dom';
 import { useInterval } from '@/hooks/useInterval';
 import { useHeaderRefresh } from '@/hooks/useHeaderRefresh';
+import { useActionBarHeightVar } from '@/hooks/useActionBarHeightVar';
 import { usePageTransitionLayer } from '@/components/common/PageTransitionLayer';
-import {
-  ANTIGRAVITY_CONFIG,
-  CLAUDE_CONFIG,
-  CODEX_CONFIG,
-  GEMINI_CLI_CONFIG,
-  KIMI_CONFIG,
-  type QuotaConfig,
-} from '@/components/quota';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { Select } from '@/components/ui/Select';
-import { IconFilterAll, IconRefreshCw } from '@/components/ui/icons';
+import { IconFilterAll, IconSearch } from '@/components/ui/icons';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { ToggleSwitch } from '@/components/ui/ToggleSwitch';
+import { AuthFilesStatusFilterCard } from '@/features/authFiles/components/AuthFilesStatusFilterCard';
 import { authFilesGroupApi } from '@/services/api';
 import { copyToClipboard } from '@/utils/clipboard';
-import { getStatusFromError, resolveAuthProvider } from '@/utils/quota';
 import {
+  MAX_CARD_PAGE_SIZE,
   MIN_CARD_PAGE_SIZE,
   QUOTA_PROVIDER_TYPES,
   clampCardPageSize,
@@ -48,12 +42,6 @@ import {
   type QuotaProviderType,
   type ResolvedTheme,
 } from '@/features/authFiles/constants';
-import {
-  buildAuthFilesStatusUpdates,
-  paginateAuthFiles,
-  sortAuthFilesByMode,
-  type AuthFilesStatusAction,
-} from '@/features/authFiles/pageControls';
 import { AuthFileCard } from '@/features/authFiles/components/AuthFileCard';
 import { AuthFileModelsModal } from '@/features/authFiles/components/AuthFileModelsModal';
 import { AuthFilesPrefixProxyEditorModal } from '@/features/authFiles/components/AuthFilesPrefixProxyEditorModal';
@@ -63,18 +51,18 @@ import { useAuthFilesData } from '@/features/authFiles/hooks/useAuthFilesData';
 import { useAuthFilesModels } from '@/features/authFiles/hooks/useAuthFilesModels';
 import { useAuthFilesOauth } from '@/features/authFiles/hooks/useAuthFilesOauth';
 import { useAuthFilesPrefixProxyEditor } from '@/features/authFiles/hooks/useAuthFilesPrefixProxyEditor';
-import { useAuthFilesStats } from '@/features/authFiles/hooks/useAuthFilesStats';
 import { useAuthFilesStatusBarCache } from '@/features/authFiles/hooks/useAuthFilesStatusBarCache';
 import {
+  isAuthFilesStatusFilterMode,
   isAuthFilesSortMode,
   readAuthFilesUiState,
   readPersistedAuthFilesCompactMode,
   writeAuthFilesUiState,
   writePersistedAuthFilesCompactMode,
+  type AuthFilesStatusFilterMode,
   type AuthFilesSortMode,
 } from '@/features/authFiles/uiState';
-import { useAuthStore, useNotificationStore, useQuotaStore, useThemeStore } from '@/stores';
-import type { AuthFileItem } from '@/types';
+import { useAuthStore, useNotificationStore, useThemeStore } from '@/stores';
 import styles from './AuthFilesPage.module.scss';
 
 const easePower3Out = (progress: number) => 1 - (1 - progress) ** 4;
@@ -84,20 +72,6 @@ const BATCH_BAR_HIDDEN_TRANSFORM = 'translateX(-50%) translateY(56px)';
 const DEFAULT_REGULAR_PAGE_SIZE = 9;
 const DEFAULT_COMPACT_PAGE_SIZE = 12;
 
-type AuthFilesQuotaConfig = QuotaConfig<unknown, unknown>;
-type UnknownQuotaUpdater =
-  | Record<string, unknown>
-  | ((prev: Record<string, unknown>) => Record<string, unknown>);
-type UnknownQuotaSetter = (updater: UnknownQuotaUpdater) => void;
-
-const AUTH_FILES_QUOTA_CONFIGS: Record<QuotaProviderType, AuthFilesQuotaConfig> = {
-  antigravity: ANTIGRAVITY_CONFIG as AuthFilesQuotaConfig,
-  claude: CLAUDE_CONFIG as AuthFilesQuotaConfig,
-  codex: CODEX_CONFIG as AuthFilesQuotaConfig,
-  'gemini-cli': GEMINI_CLI_CONFIG as AuthFilesQuotaConfig,
-  kimi: KIMI_CONFIG as AuthFilesQuotaConfig,
-};
-
 const escapeWildcardSearchSegment = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 const buildWildcardSearch = (value: string): RegExp | null => {
@@ -106,14 +80,23 @@ const buildWildcardSearch = (value: string): RegExp | null => {
   return new RegExp(pattern, 'i');
 };
 
+const resolveStatusFilterMode = (
+  problemOnly: boolean,
+  disabledOnly: boolean
+): AuthFilesStatusFilterMode => {
+  if (problemOnly) return 'problem';
+  if (disabledOnly) return 'disabled';
+  return 'all';
+};
+
+const normalizePersistedStatusFilterMode = (value: unknown): AuthFilesStatusFilterMode | null => {
+  if (value === 'disabledProblem') return 'problem';
+  return isAuthFilesStatusFilterMode(value) ? value : null;
+};
+
 export function AuthFilesPage() {
   const { t } = useTranslation();
   const showNotification = useNotificationStore((state) => state.showNotification);
-  const setAntigravityQuota = useQuotaStore((state) => state.setAntigravityQuota) as UnknownQuotaSetter;
-  const setClaudeQuota = useQuotaStore((state) => state.setClaudeQuota) as UnknownQuotaSetter;
-  const setCodexQuota = useQuotaStore((state) => state.setCodexQuota) as UnknownQuotaSetter;
-  const setGeminiCliQuota = useQuotaStore((state) => state.setGeminiCliQuota) as UnknownQuotaSetter;
-  const setKimiQuota = useQuotaStore((state) => state.setKimiQuota) as UnknownQuotaSetter;
   const connectionStatus = useAuthStore((state) => state.connectionStatus);
   const resolvedTheme: ResolvedTheme = useThemeStore((state) => state.resolvedTheme);
   const pageTransitionLayer = usePageTransitionLayer();
@@ -121,11 +104,10 @@ export function AuthFilesPage() {
   const navigate = useNavigate();
 
   const [filter, setFilter] = useState<'all' | string>('all');
-  const [problemOnly, setProblemOnly] = useState(false);
+  const [statusFilterMode, setStatusFilterMode] = useState<AuthFilesStatusFilterMode>('all');
   const [compactMode, setCompactMode] = useState(false);
   const [search, setSearch] = useState('');
   const [page, setPage] = useState(1);
-  const [showAll, setShowAll] = useState(false);
   const [pageSizeByMode, setPageSizeByMode] = useState({
     regular: DEFAULT_REGULAR_PAGE_SIZE,
     compact: DEFAULT_COMPACT_PAGE_SIZE,
@@ -143,14 +125,11 @@ export function AuthFilesPage() {
   const [authFilesGroupLoading, setAuthFilesGroupLoading] = useState(true);
   const [authFilesGroupSaving, setAuthFilesGroupSaving] = useState(false);
   const [authFilesGroupError, setAuthFilesGroupError] = useState('');
-  const [quotaRefreshing, setQuotaRefreshing] = useState<Record<string, boolean>>({});
-  const [quotaRefreshAllLoading, setQuotaRefreshAllLoading] = useState(false);
   const floatingBatchActionsRef = useRef<HTMLDivElement>(null);
   const batchActionAnimationRef = useRef<AnimationPlaybackControlsWithThen | null>(null);
   const previousSelectionCountRef = useRef(0);
   const selectionCountRef = useRef(0);
 
-  const { keyStats, usageDetails, loadKeyStats, refreshKeyStats } = useAuthFilesStats();
   const {
     files,
     selectedFiles,
@@ -176,11 +155,10 @@ export function AuthFilesPage() {
     deselectAll,
     batchDownload,
     batchSetStatus,
-    batchApplyStatusUpdates,
     batchDelete,
-  } = useAuthFilesData({ refreshKeyStats });
+  } = useAuthFilesData();
 
-  const statusBarCache = useAuthFilesStatusBarCache(files, usageDetails);
+  const statusBarCache = useAuthFilesStatusBarCache(files);
 
   const {
     excluded,
@@ -221,22 +199,19 @@ export function AuthFilesPage() {
   } = useAuthFilesPrefixProxyEditor({
     disableControls: connectionStatus !== 'connected',
     loadFiles,
-    loadKeyStats: refreshKeyStats,
   });
 
   const disableControls = connectionStatus !== 'connected';
+  const normalizedFilter = normalizeProviderKey(String(filter));
+  const quotaFilterType: QuotaProviderType | null = QUOTA_PROVIDER_TYPES.has(
+    normalizedFilter as QuotaProviderType
+  )
+    ? (normalizedFilter as QuotaProviderType)
+    : null;
   const pageSize = compactMode ? pageSizeByMode.compact : pageSizeByMode.regular;
-
-  const quotaSetters = useMemo(
-    () => ({
-      antigravity: setAntigravityQuota,
-      claude: setClaudeQuota,
-      codex: setCodexQuota,
-      'gemini-cli': setGeminiCliQuota,
-      kimi: setKimiQuota,
-    }),
-    [setAntigravityQuota, setClaudeQuota, setCodexQuota, setGeminiCliQuota, setKimiQuota]
-  );
+  const problemOnly = statusFilterMode === 'problem';
+  const disabledOnly = statusFilterMode === 'disabled';
+  const enabledOnly = statusFilterMode === 'enabled';
 
   useEffect(() => {
     const persistedCompactMode = readPersistedAuthFilesCompactMode();
@@ -247,19 +222,26 @@ export function AuthFilesPage() {
     const persisted = readAuthFilesUiState();
     if (persisted) {
       if (typeof persisted.filter === 'string' && persisted.filter.trim()) {
-        setFilter(persisted.filter);
+        setFilter(normalizeProviderKey(persisted.filter));
       }
-      if (typeof persisted.problemOnly === 'boolean') {
-        setProblemOnly(persisted.problemOnly);
+      const persistedStatusFilterMode = normalizePersistedStatusFilterMode(
+        persisted.statusFilterMode
+      );
+      if (persistedStatusFilterMode) {
+        setStatusFilterMode(persistedStatusFilterMode);
+      } else if (
+        typeof persisted.problemOnly === 'boolean' ||
+        typeof persisted.disabledOnly === 'boolean'
+      ) {
+        setStatusFilterMode(
+          resolveStatusFilterMode(persisted.problemOnly === true, persisted.disabledOnly === true)
+        );
       }
       if (typeof persistedCompactMode !== 'boolean' && typeof persisted.compactMode === 'boolean') {
         setCompactMode(persisted.compactMode);
       }
       if (typeof persisted.search === 'string') {
         setSearch(persisted.search);
-      }
-      if (typeof persisted.showAll === 'boolean') {
-        setShowAll(persisted.showAll);
       }
       if (typeof persisted.page === 'number' && Number.isFinite(persisted.page)) {
         setPage(Math.max(1, Math.round(persisted.page)));
@@ -293,11 +275,12 @@ export function AuthFilesPage() {
 
     writeAuthFilesUiState({
       filter,
+      statusFilterMode,
       problemOnly,
+      disabledOnly,
       compactMode,
       search,
       page,
-      showAll,
       pageSize,
       regularPageSize: pageSizeByMode.regular,
       compactPageSize: pageSizeByMode.compact,
@@ -306,14 +289,15 @@ export function AuthFilesPage() {
     writePersistedAuthFilesCompactMode(compactMode);
   }, [
     compactMode,
+    disabledOnly,
     filter,
     page,
-    showAll,
     pageSize,
     pageSizeByMode,
     problemOnly,
     search,
     sortMode,
+    statusFilterMode,
     uiStateHydrated,
   ]);
 
@@ -360,7 +344,7 @@ export function AuthFilesPage() {
     if (!Number.isFinite(parsed)) return;
 
     const rounded = Math.round(parsed);
-    if (rounded < MIN_CARD_PAGE_SIZE) return;
+    if (rounded < MIN_CARD_PAGE_SIZE || rounded > MAX_CARD_PAGE_SIZE) return;
 
     setCurrentModePageSize(rounded);
     setPage(1);
@@ -371,10 +355,14 @@ export function AuthFilesPage() {
       if (!isAuthFilesSortMode(value) || value === sortMode) return;
       setSortMode(value);
       setPage(1);
-      void loadFiles().catch(() => {});
     },
-    [loadFiles, sortMode]
+    [sortMode]
   );
+
+  const handleStatusFilterModeChange = useCallback((nextMode: AuthFilesStatusFilterMode) => {
+    setStatusFilterMode(nextMode);
+    setPage(1);
+  }, []);
 
   const loadAuthFilesGroup = useCallback(async () => {
     setAuthFilesGroupLoading(true);
@@ -419,79 +407,23 @@ export function AuthFilesPage() {
     }
   }, [authFilesGroup, showNotification, t]);
 
-  const resolveQuotaConfigForFile = useCallback((file: AuthFileItem) => {
-    const provider = resolveAuthProvider(file);
-    if (!QUOTA_PROVIDER_TYPES.has(provider as QuotaProviderType)) return null;
-    return AUTH_FILES_QUOTA_CONFIGS[provider as QuotaProviderType];
-  }, []);
-
-  const refreshQuotaForFile = useCallback(
-    async (file: AuthFileItem) => {
-      if (disableControls) return false;
-      if (isRuntimeOnlyAuthFile(file)) return false;
-
-      const config = resolveQuotaConfigForFile(file);
-      if (!config) return false;
-
-      const setQuota = quotaSetters[config.type];
-      setQuota((prev) => ({
-        ...prev,
-        [file.name]: config.buildLoadingState(),
-      }));
-      setQuotaRefreshing((prev) => ({ ...prev, [file.name]: true }));
-
-      try {
-        const data = await config.fetchQuota(file, t);
-        setQuota((prev) => ({
-          ...prev,
-          [file.name]: config.buildSuccessState(data),
-        }));
-        showNotification(t('auth_files.quota_refresh_success', { name: file.name }), 'success');
-        return true;
-      } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : t('common.unknown_error');
-        const status = getStatusFromError(err);
-        setQuota((prev) => ({
-          ...prev,
-          [file.name]: config.buildErrorState(message, status),
-        }));
-        showNotification(t('auth_files.quota_refresh_failed', { name: file.name, message }), 'error');
-        return false;
-      } finally {
-        setQuotaRefreshing((prev) => {
-          const next = { ...prev };
-          delete next[file.name];
-          return next;
-        });
-      }
-    },
-    [disableControls, quotaSetters, resolveQuotaConfigForFile, showNotification, t]
-  );
-
   const handleHeaderRefresh = useCallback(async () => {
-    await Promise.all([
-      loadFiles(),
-      refreshKeyStats(),
-      loadExcluded(),
-      loadModelAlias(),
-      loadAuthFilesGroup(),
-    ]);
-  }, [loadFiles, refreshKeyStats, loadExcluded, loadModelAlias, loadAuthFilesGroup]);
+    await Promise.all([loadFiles(), loadExcluded(), loadModelAlias(), loadAuthFilesGroup()]);
+  }, [loadFiles, loadExcluded, loadModelAlias, loadAuthFilesGroup]);
 
   useHeaderRefresh(handleHeaderRefresh);
 
   useEffect(() => {
     if (!isCurrentLayer) return;
     loadFiles();
-    void loadKeyStats().catch(() => {});
     loadExcluded();
     loadModelAlias();
     void loadAuthFilesGroup().catch(() => {});
-  }, [isCurrentLayer, loadFiles, loadKeyStats, loadExcluded, loadModelAlias, loadAuthFilesGroup]);
+  }, [isCurrentLayer, loadFiles, loadExcluded, loadModelAlias, loadAuthFilesGroup]);
 
   useInterval(
     () => {
-      void refreshKeyStats().catch(() => {});
+      void loadFiles().catch(() => {});
     },
     isCurrentLayer ? 240_000 : null
   );
@@ -499,16 +431,32 @@ export function AuthFilesPage() {
   const existingTypes = useMemo(() => {
     const types = new Set<string>(['all']);
     files.forEach((file) => {
-      if (file.type) {
-        types.add(file.type);
-      }
+      const type = normalizeProviderKey(String(file.type ?? file.provider ?? ''));
+      if (type) types.add(type);
     });
     return Array.from(types);
   }, [files]);
 
-  const filesMatchingProblemFilter = useMemo(
-    () => (problemOnly ? files.filter(hasAuthFileStatusMessage) : files),
-    [files, problemOnly]
+  const filesMatchingStatusFilters = useMemo(
+    () =>
+      files.filter((file) => {
+        if (enabledOnly && file.disabled === true) return false;
+        if (disabledOnly && file.disabled !== true) return false;
+        if (problemOnly && !hasAuthFileStatusMessage(file)) return false;
+        return true;
+      }),
+    [disabledOnly, enabledOnly, files, problemOnly]
+  );
+
+  const statusFilterOptions = useMemo(
+    () =>
+      [
+        { value: 'all', label: t('auth_files.problem_filter_all') },
+        { value: 'enabled', label: t('auth_files.problem_filter_enabled') },
+        { value: 'disabled', label: t('auth_files.problem_filter_disabled') },
+        { value: 'problem', label: t('auth_files.problem_filter_problem') },
+      ] satisfies Array<{ value: AuthFilesStatusFilterMode; label: string }>,
+    [t]
   );
 
   const sortOptions = useMemo(
@@ -516,19 +464,19 @@ export function AuthFilesPage() {
       { value: 'default', label: t('auth_files.sort_default') },
       { value: 'az', label: t('auth_files.sort_az') },
       { value: 'priority', label: t('auth_files.sort_priority') },
-      { value: 'modified', label: t('auth_files.sort_modified') },
     ],
     [t]
   );
 
   const typeCounts = useMemo(() => {
-    const counts: Record<string, number> = { all: filesMatchingProblemFilter.length };
-    filesMatchingProblemFilter.forEach((file) => {
-      if (!file.type) return;
-      counts[file.type] = (counts[file.type] || 0) + 1;
+    const counts: Record<string, number> = { all: filesMatchingStatusFilters.length };
+    filesMatchingStatusFilters.forEach((file) => {
+      const type = normalizeProviderKey(String(file.type ?? file.provider ?? ''));
+      if (!type) return;
+      counts[type] = (counts[type] || 0) + 1;
     });
     return counts;
-  }, [filesMatchingProblemFilter]);
+  }, [filesMatchingStatusFilters]);
 
   const normalizedSearch = search.trim();
   const wildcardSearch = useMemo(() => buildWildcardSearch(normalizedSearch), [normalizedSearch]);
@@ -536,8 +484,9 @@ export function AuthFilesPage() {
   const filtered = useMemo(() => {
     const normalizedTerm = normalizedSearch.toLowerCase();
 
-    return filesMatchingProblemFilter.filter((item) => {
-      const matchType = filter === 'all' || item.type === filter;
+    return filesMatchingStatusFilters.filter((item) => {
+      const type = normalizeProviderKey(String(item.type ?? item.provider ?? ''));
+      const matchType = normalizedFilter === 'all' || type === normalizedFilter;
       const matchSearch =
         !normalizedSearch ||
         [item.name, item.type, item.provider].some((value) => {
@@ -548,7 +497,7 @@ export function AuthFilesPage() {
         });
       return matchType && matchSearch;
     });
-  }, [filesMatchingProblemFilter, filter, normalizedSearch, wildcardSearch]);
+  }, [filesMatchingStatusFilters, normalizedFilter, normalizedSearch, wildcardSearch]);
 
   const sorted = useMemo(() => {
     const copy = [...filtered];
@@ -564,28 +513,18 @@ export function AuthFilesPage() {
       copy.sort((a, b) => a.name.localeCompare(b.name));
     } else if (sortMode === 'priority') {
       copy.sort((a, b) => {
-        const pa = parsePriorityValue(a.priority ?? a['priority']) ?? 0;
-        const pb = parsePriorityValue(b.priority ?? b['priority']) ?? 0;
-        return pb - pa;
+        const pa = parsePriorityValue(a.priority) ?? 0;
+        const pb = parsePriorityValue(b.priority) ?? 0;
+        return pb - pa; // 高优先级排前面
       });
-    } else {
-      return sortAuthFilesByMode(copy, sortMode);
     }
     return copy;
   }, [filtered, sortMode]);
 
-  const pagination = useMemo(
-    () =>
-      paginateAuthFiles(sorted, {
-        page,
-        pageSize,
-        showAll,
-      }),
-    [page, pageSize, showAll, sorted]
-  );
-  const totalPages = pagination.totalPages;
-  const currentPage = pagination.currentPage;
-  const pageItems = pagination.items;
+  const totalPages = Math.max(1, Math.ceil(sorted.length / pageSize));
+  const currentPage = Math.min(page, totalPages);
+  const start = (currentPage - 1) * pageSize;
+  const pageItems = useMemo(() => sorted.slice(start, start + pageSize), [pageSize, sorted, start]);
   const selectablePageItems = useMemo(
     () => pageItems.filter((file) => !isRuntimeOnlyAuthFile(file)),
     [pageItems]
@@ -599,108 +538,11 @@ export function AuthFilesPage() {
     () => selectedNames.some((name) => statusUpdating[name] === true),
     [selectedNames, statusUpdating]
   );
-  const refreshableQuotaFiles = useMemo(
-    () =>
-      files.filter(
-        (file) => !isRuntimeOnlyAuthFile(file) && resolveQuotaConfigForFile(file) !== null
-      ),
-    [files, resolveQuotaConfigForFile]
-  );
-  const filteredHasStatusUpdating = useMemo(
-    () => selectableFilteredItems.some((file) => statusUpdating[file.name] === true),
-    [selectableFilteredItems, statusUpdating]
-  );
   const batchStatusButtonsDisabled =
     disableControls ||
     selectedNames.length === 0 ||
     batchStatusUpdating ||
     selectedHasStatusUpdating;
-  const filteredStatusButtonsDisabled =
-    disableControls ||
-    loading ||
-    selectableFilteredItems.length === 0 ||
-    batchStatusUpdating ||
-    filteredHasStatusUpdating;
-  const refreshAllQuotaDisabled =
-    disableControls || quotaRefreshAllLoading || refreshableQuotaFiles.length === 0;
-
-  const handleRefreshAllQuota = useCallback(async () => {
-    if (refreshAllQuotaDisabled) return;
-
-    const targets = refreshableQuotaFiles;
-    setQuotaRefreshAllLoading(true);
-    setQuotaRefreshing((prev) => {
-      const next = { ...prev };
-      targets.forEach((file) => {
-        next[file.name] = true;
-      });
-      return next;
-    });
-
-    try {
-      const grouped = new Map<QuotaProviderType, typeof targets>();
-      targets.forEach((file) => {
-        const provider = resolveAuthProvider(file) as QuotaProviderType;
-        const current = grouped.get(provider) ?? [];
-        current.push(file);
-        grouped.set(provider, current);
-      });
-
-      grouped.forEach((filesForProvider, provider) => {
-        const config = AUTH_FILES_QUOTA_CONFIGS[provider];
-        const setQuota = quotaSetters[provider];
-        setQuota((prev) => {
-          const next = { ...prev };
-          filesForProvider.forEach((file) => {
-            next[file.name] = config.buildLoadingState();
-          });
-          return next;
-        });
-      });
-
-      const results = await Promise.all(
-        targets.map(async (file) => {
-          const config = resolveQuotaConfigForFile(file);
-          if (!config) return null;
-
-          try {
-            const data = await config.fetchQuota(file, t);
-            return { file, config, status: 'success' as const, data };
-          } catch (err: unknown) {
-            const message = err instanceof Error ? err.message : t('common.unknown_error');
-            return {
-              file,
-              config,
-              status: 'error' as const,
-              message,
-              errorStatus: getStatusFromError(err),
-            };
-          }
-        })
-      );
-
-      results.forEach((result) => {
-        if (!result) return;
-        const setQuota = quotaSetters[result.config.type];
-        setQuota((prev) => ({
-          ...prev,
-          [result.file.name]:
-            result.status === 'success'
-              ? result.config.buildSuccessState(result.data)
-              : result.config.buildErrorState(result.message, result.errorStatus),
-        }));
-      });
-    } finally {
-      setQuotaRefreshing((prev) => {
-        const next = { ...prev };
-        targets.forEach((file) => {
-          delete next[file.name];
-        });
-        return next;
-      });
-      setQuotaRefreshAllLoading(false);
-    }
-  }, [quotaSetters, refreshableQuotaFiles, refreshAllQuotaDisabled, resolveQuotaConfigForFile, t]);
 
   const copyTextWithNotification = useCallback(
     async (text: string) => {
@@ -713,15 +555,6 @@ export function AuthFilesPage() {
       );
     },
     [showNotification, t]
-  );
-
-  const handleFilteredStatusAction = useCallback(
-    (action: AuthFilesStatusAction) => {
-      const updates = buildAuthFilesStatusUpdates(sorted, action);
-      if (updates.length === 0) return;
-      void batchApplyStatusUpdates(updates);
-    },
-    [batchApplyStatusUpdates, sorted]
   );
 
   const openExcludedEditor = useCallback(
@@ -754,32 +587,11 @@ export function AuthFilesPage() {
     [filter, navigate]
   );
 
-  useLayoutEffect(() => {
-    if (typeof window === 'undefined') return;
-
-    const actionsEl = floatingBatchActionsRef.current;
-    if (!actionsEl) {
-      document.documentElement.style.removeProperty('--auth-files-action-bar-height');
-      return;
-    }
-
-    const updatePadding = () => {
-      const height = actionsEl.getBoundingClientRect().height;
-      document.documentElement.style.setProperty('--auth-files-action-bar-height', `${height}px`);
-    };
-
-    updatePadding();
-    window.addEventListener('resize', updatePadding);
-
-    const ro = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(updatePadding);
-    ro?.observe(actionsEl);
-
-    return () => {
-      ro?.disconnect();
-      window.removeEventListener('resize', updatePadding);
-      document.documentElement.style.removeProperty('--auth-files-action-bar-height');
-    };
-  }, [batchActionBarVisible, selectionCount]);
+  useActionBarHeightVar(
+    floatingBatchActionsRef,
+    '--auth-files-action-bar-height',
+    batchActionBarVisible
+  );
 
   useEffect(() => {
     selectionCountRef.current = selectionCount;
@@ -848,7 +660,7 @@ export function AuthFilesPage() {
     <div className={styles.filterRail}>
       <div className={styles.filterTags}>
         {existingTypes.map((type) => {
-          const isActive = filter === type;
+          const isActive = normalizedFilter === type;
           const iconSrc = getAuthFileIcon(type, resolvedTheme);
           const color =
             type === 'all'
@@ -903,13 +715,21 @@ export function AuthFilesPage() {
     </div>
   );
 
-  const deleteAllButtonLabel = problemOnly
-    ? filter === 'all'
-      ? t('auth_files.delete_problem_button')
-      : t('auth_files.delete_problem_button_with_type', { type: getTypeLabel(t, filter) })
-    : filter === 'all'
+  const deleteAllButtonLabel = (() => {
+    if (enabledOnly || disabledOnly) {
+      return t('auth_files.delete_filtered_result_button');
+    }
+    if (problemOnly) {
+      return normalizedFilter === 'all'
+        ? t('auth_files.delete_problem_button')
+        : t('auth_files.delete_problem_button_with_type', {
+            type: getTypeLabel(t, normalizedFilter),
+          });
+    }
+    return normalizedFilter === 'all'
       ? t('auth_files.delete_all_button')
-      : `${t('common.delete')} ${getTypeLabel(t, filter)}`;
+      : `${t('common.delete')} ${getTypeLabel(t, normalizedFilter)}`;
+  })();
 
   return (
     <div className={styles.container}>
@@ -985,42 +805,6 @@ export function AuthFilesPage() {
               {t('common.refresh')}
             </Button>
             <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => void handleRefreshAllQuota()}
-              disabled={refreshAllQuotaDisabled}
-              loading={quotaRefreshAllLoading}
-              title={t('quota_management.refresh_all_credentials')}
-            >
-              <>
-                {!quotaRefreshAllLoading && <IconRefreshCw size={14} />}
-                <span>{t('quota_management.refresh_all_credentials')}</span>
-              </>
-            </Button>
-            <Button
-              size="sm"
-              onClick={() => handleFilteredStatusAction('enable')}
-              disabled={filteredStatusButtonsDisabled}
-            >
-              {t('auth_files.filtered_enable')}
-            </Button>
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => handleFilteredStatusAction('disable')}
-              disabled={filteredStatusButtonsDisabled}
-            >
-              {t('auth_files.filtered_disable')}
-            </Button>
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => handleFilteredStatusAction('invert')}
-              disabled={filteredStatusButtonsDisabled}
-            >
-              {t('auth_files.filtered_invert')}
-            </Button>
-            <Button
               size="sm"
               onClick={handleUploadClick}
               disabled={disableControls || uploading}
@@ -1035,8 +819,12 @@ export function AuthFilesPage() {
                 handleDeleteAll({
                   filter,
                   problemOnly,
+                  disabledOnly,
+                  enabledOnly,
                   onResetFilterToAll: () => setFilter('all'),
-                  onResetProblemOnly: () => setProblemOnly(false),
+                  onResetProblemOnly: () => setStatusFilterMode('all'),
+                  onResetDisabledOnly: () => setStatusFilterMode('all'),
+                  onResetEnabledOnly: () => setStatusFilterMode('all'),
                 })
               }
               disabled={disableControls || loading || deletingAll}
@@ -1063,95 +851,74 @@ export function AuthFilesPage() {
           <div className={styles.filterContent}>
             <div className={styles.filterControlsPanel}>
               <div className={styles.filterControls}>
-                <div className={styles.filterItem}>
+                <div className={`${styles.filterItem} ${styles.filterSearchItem}`}>
                   <label>{t('auth_files.search_label')}</label>
                   <Input
+                    className={styles.searchInput}
                     value={search}
                     onChange={(e) => {
                       setSearch(e.target.value);
                       setPage(1);
                     }}
                     placeholder={t('auth_files.search_placeholder')}
+                    rightElement={<IconSearch className={styles.searchIcon} size={18} />}
                   />
                 </div>
-                <div className={styles.filterItem}>
-                  {!showAll && (
-                    <>
-                      <label>{t('auth_files.page_size_label')}</label>
-                      <input
-                        className={styles.pageSizeSelect}
-                        type="number"
-                        min={MIN_CARD_PAGE_SIZE}
-                        step={1}
-                        value={pageSizeInput}
-                        onChange={handlePageSizeChange}
-                        onBlur={(e) => commitPageSizeInput(e.currentTarget.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter') {
-                            e.currentTarget.blur();
-                          }
-                        }}
-                      />
-                    </>
-                  )}
-                </div>
-                <div className={styles.filterItem}>
-                  <label>{t('auth_files.sort_label')}</label>
-                  <Select
-                    className={styles.sortSelect}
-                    value={sortMode}
-                    options={sortOptions}
-                    onChange={handleSortModeChange}
-                    ariaLabel={t('auth_files.sort_label')}
-                    fullWidth
-                  />
+                <div className={styles.filterOptionsCard}>
+                  <div className={styles.filterOptionsControl}>
+                    <label>{t('auth_files.page_size_label')}</label>
+                    <input
+                      className={styles.pageSizeSelect}
+                      type="number"
+                      min={MIN_CARD_PAGE_SIZE}
+                      max={MAX_CARD_PAGE_SIZE}
+                      step={1}
+                      value={pageSizeInput}
+                      onChange={handlePageSizeChange}
+                      onBlur={(e) => commitPageSizeInput(e.currentTarget.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.currentTarget.blur();
+                        }
+                      }}
+                    />
+                  </div>
+                  <div className={styles.filterOptionsControl}>
+                    <label>{t('auth_files.sort_label')}</label>
+                    <Select
+                      className={styles.sortSelect}
+                      value={sortMode}
+                      options={sortOptions}
+                      onChange={handleSortModeChange}
+                      ariaLabel={t('auth_files.sort_label')}
+                      fullWidth
+                    />
+                  </div>
+                  <div className={styles.filterOptionsToggle}>
+                    <ToggleSwitch
+                      checked={compactMode}
+                      onChange={(value) => setCompactMode(value)}
+                      ariaLabel={t('auth_files.compact_mode_label')}
+                      label={
+                        <span className={styles.filterToggleLabel}>
+                          {t('auth_files.compact_mode_label')}
+                        </span>
+                      }
+                    />
+                  </div>
                 </div>
                 <div className={`${styles.filterItem} ${styles.filterToggleItem}`}>
                   <label>{t('auth_files.display_options_label')}</label>
-                  <div className={styles.filterToggleGroup}>
-                    <div className={styles.filterToggleCard}>
-                      <ToggleSwitch
-                        checked={showAll}
-                        onChange={(value) => {
-                          setShowAll(value);
-                          setPage(1);
-                        }}
-                        ariaLabel={t('auth_files.show_all_label')}
-                        label={
-                          <span className={styles.filterToggleLabel}>
-                            {t('auth_files.show_all_label')}
-                          </span>
-                        }
-                      />
-                    </div>
-                    <div className={styles.filterToggleCard}>
-                      <ToggleSwitch
-                        checked={problemOnly}
-                        onChange={(value) => {
-                          setProblemOnly(value);
-                          setPage(1);
-                        }}
-                        ariaLabel={t('auth_files.problem_filter_only')}
-                        label={
-                          <span className={styles.filterToggleLabel}>
-                            {t('auth_files.problem_filter_only')}
-                          </span>
-                        }
-                      />
-                    </div>
-                    <div className={styles.filterToggleCard}>
-                      <ToggleSwitch
-                        checked={compactMode}
-                        onChange={(value) => setCompactMode(value)}
-                        ariaLabel={t('auth_files.compact_mode_label')}
-                        label={
-                          <span className={styles.filterToggleLabel}>
-                            {t('auth_files.compact_mode_label')}
-                          </span>
-                        }
-                      />
-                    </div>
-                  </div>
+                  <AuthFilesStatusFilterCard
+                    label={t('auth_files.problem_filter_label')}
+                    minLabel={statusFilterOptions[0]?.label}
+                    maxLabel={statusFilterOptions[statusFilterOptions.length - 1]?.label}
+                    value={statusFilterMode}
+                    options={statusFilterOptions}
+                    onChange={(next) =>
+                      handleStatusFilterModeChange(next as AuthFilesStatusFilterMode)
+                    }
+                  />
                 </div>
               </div>
             </div>
@@ -1165,7 +932,7 @@ export function AuthFilesPage() {
               />
             ) : (
               <div
-                className={`${styles.fileGrid} ${compactMode ? styles.fileGridCompact : ''}`}
+                className={`${styles.fileGrid} ${quotaFilterType ? styles.fileGridQuotaManaged : ''} ${compactMode ? styles.fileGridCompact : ''}`}
               >
                 {pageItems.map((file) => (
                   <AuthFileCard
@@ -1177,11 +944,9 @@ export function AuthFilesPage() {
                     disableControls={disableControls}
                     deleting={deleting}
                     statusUpdating={statusUpdating}
-                    quotaRefreshing={quotaRefreshing}
-                    keyStats={keyStats}
+                    quotaFilterType={quotaFilterType}
                     statusBarCache={statusBarCache}
                     onShowModels={showModels}
-                    onRefreshQuota={(target) => void refreshQuotaForFile(target)}
                     onDownload={handleDownload}
                     onOpenPrefixProxyEditor={openPrefixProxyEditor}
                     onDelete={handleDelete}
@@ -1192,7 +957,7 @@ export function AuthFilesPage() {
               </div>
             )}
 
-            {!loading && !showAll && totalPages > 1 && (
+            {!loading && sorted.length > pageSize && (
               <div className={styles.pagination}>
                 <Button
                   variant="secondary"

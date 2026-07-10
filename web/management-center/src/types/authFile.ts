@@ -3,15 +3,17 @@
  * 基于原项目 src/modules/auth-files.js
  */
 
+import type { RecentRequestBucket } from '@/utils/recentRequests';
+
 export type AuthFileType =
   | 'qwen'
   | 'kimi'
   | 'gemini'
-  | 'gemini-cli'
   | 'aistudio'
   | 'claude'
   | 'codex'
   | 'antigravity'
+  | 'xai'
   | 'iflow'
   | 'vertex'
   | 'empty'
@@ -34,6 +36,10 @@ export interface AuthFileItem {
   proxyUrl?: string;
   backoffMode?: 'default' | 'off' | 'custom';
   requestRetry?: number;
+  success?: unknown;
+  failed?: unknown;
+  recent_requests?: RecentRequestBucket[];
+  recentRequests?: RecentRequestBucket[];
   [key: string]: unknown;
 }
 

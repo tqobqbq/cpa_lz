@@ -73,7 +73,7 @@
   }
 }
 
-:global([data-theme='dark']) {
+[data-theme='dark'] {
   .btn {
     color: #fff;
   }
@@ -92,7 +92,9 @@ textarea {
   padding: 10px 12px;
   background-color: var(--bg-secondary);
   color: var(--text-primary);
-  transition: border-color $transition-fast, box-shadow $transition-fast;
+  transition:
+    border-color $transition-fast,
+    box-shadow $transition-fast;
 
   &:focus {
     outline: none;
@@ -266,7 +268,9 @@ textarea {
     color: var(--text-secondary);
     border-radius: $radius-md;
     cursor: pointer;
-    transition: color 0.15s ease, background-color 0.15s ease;
+    transition:
+      color 0.15s ease,
+      background-color 0.15s ease;
 
     svg {
       display: block;
@@ -466,7 +470,10 @@ textarea {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  transition: color 0.15s ease, background-color 0.15s ease, transform 0.15s ease;
+  transition:
+    color 0.15s ease,
+    background-color 0.15s ease,
+    transform 0.15s ease;
   z-index: 10;
 
   svg {
@@ -597,14 +604,20 @@ textarea {
   .empty-icon {
     width: 42px;
     height: 42px;
+    flex: 0 0 42px;
     border-radius: $radius-full;
     border: 2px solid var(--border-color);
-    display: grid;
-    place-items: center;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 0;
     color: var(--text-secondary);
 
     svg {
       display: block;
+      width: 20px;
+      height: 20px;
+      flex-shrink: 0;
     }
   }
 
@@ -616,6 +629,19 @@ textarea {
   .empty-desc {
     color: var(--text-secondary);
     margin-top: 4px;
+  }
+
+  .empty-action .btn > span {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    line-height: 1;
+  }
+
+  .empty-action .btn svg {
+    display: block;
+    flex-shrink: 0;
   }
 }
 
@@ -671,8 +697,9 @@ textarea {
 
   .item-subtitle {
     color: var(--text-secondary);
-    font-family: ui-monospace, SFMono-Regular, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New',
-      monospace;
+    font-family:
+      ui-monospace, SFMono-Regular, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono',
+      'Courier New', monospace;
     word-break: break-all;
   }
 
@@ -779,7 +806,9 @@ textarea {
   max-height: 520px;
   overflow: auto;
   white-space: pre-wrap;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+  font-family:
+    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New',
+    monospace;
   color: var(--text-primary);
 }
 

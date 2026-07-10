@@ -113,8 +113,8 @@
 .antigravityGrid,
 .claudeGrid,
 .codexGrid,
-.geminiCliGrid,
-.kimiGrid {
+.kimiGrid,
+.xaiGrid {
   display: grid;
   gap: $spacing-md;
   grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
@@ -127,8 +127,8 @@
 .antigravityControls,
 .claudeControls,
 .codexControls,
-.geminiCliControls,
-.kimiControls {
+.kimiControls,
+.xaiControls {
   display: flex;
   gap: $spacing-md;
   flex-wrap: wrap;
@@ -139,8 +139,8 @@
 .antigravityControl,
 .claudeControl,
 .codexControl,
-.geminiCliControl,
-.kimiControl {
+.kimiControl,
+.xaiControl {
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -247,33 +247,23 @@
 
 // 卡片渐变背景 — 基于 TYPE_COLORS light.bg 转 rgba
 .claudeCard {
-  background-image: linear-gradient(180deg,
-      rgba(251, 236, 228, 0.18),
-      rgba(251, 236, 228, 0));
+  background-image: linear-gradient(180deg, rgba(251, 236, 228, 0.18), rgba(251, 236, 228, 0));
 }
 
 .antigravityCard {
-  background-image: linear-gradient(180deg,
-      rgba(224, 247, 250, 0.12),
-      rgba(224, 247, 250, 0));
+  background-image: linear-gradient(180deg, rgba(224, 247, 250, 0.12), rgba(224, 247, 250, 0));
 }
 
 .codexCard {
-  background-image: linear-gradient(180deg,
-      rgba(234, 231, 255, 0.18),
-      rgba(234, 231, 255, 0));
-}
-
-.geminiCliCard {
-  background-image: linear-gradient(180deg,
-      rgba(224, 232, 255, 0.2),
-      rgba(224, 232, 255, 0));
+  background-image: linear-gradient(180deg, rgba(234, 231, 255, 0.18), rgba(234, 231, 255, 0));
 }
 
 .kimiCard {
-  background-image: linear-gradient(180deg,
-      rgba(220, 232, 255, 0.2),
-      rgba(220, 232, 255, 0));
+  background-image: linear-gradient(180deg, rgba(220, 232, 255, 0.2), rgba(220, 232, 255, 0));
+}
+
+.xaiCard {
+  background-image: linear-gradient(180deg, rgba(243, 244, 246, 0.22), rgba(243, 244, 246, 0));
 }
 
 .quotaSection {
@@ -289,6 +279,37 @@
   display: flex;
   flex-direction: column;
   gap: $spacing-xs;
+}
+
+.antigravityQuotaGroup {
+  display: flex;
+  flex-direction: column;
+  gap: $spacing-sm;
+  padding-bottom: $spacing-xs;
+}
+
+.antigravityQuotaGroup + .antigravityQuotaGroup {
+  padding-top: $spacing-sm;
+  border-top: 1px solid color-mix(in srgb, var(--border-color) 65%, transparent);
+}
+
+.antigravityQuotaGroupHeader {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.antigravityQuotaGroupTitle {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.antigravityQuotaGroupDescription {
+  font-size: 12px;
+  line-height: 1.35;
+  color: var(--text-tertiary);
 }
 
 .quotaRowHeader {
@@ -395,6 +416,27 @@
   }
 }
 
+.quotaCardActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: $spacing-xs;
+  flex-wrap: wrap;
+  padding-top: $spacing-xs;
+}
+
+.quotaResetCreditButton:global(.btn.btn-sm),
+.quotaRefreshButton:global(.btn.btn-sm) {
+  border-radius: 999px;
+  padding-inline: 12px;
+
+  > span {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    white-space: nowrap;
+  }
+}
+
 .quotaError {
   font-size: 12px;
   color: var(--danger-color);
@@ -416,19 +458,89 @@
 .codexPlan {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 6px 12px;
   font-size: 12px;
   color: var(--text-secondary);
+  flex-wrap: wrap;
+}
+
+.codexPlanItem {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+  flex-wrap: wrap;
 }
 
 .codexPlanLabel {
   color: var(--text-tertiary);
+  flex: 0 0 auto;
 }
 
 .codexPlanValue {
   font-weight: 600;
   color: var(--text-primary);
   text-transform: capitalize;
+  min-width: 0;
+}
+
+.codexResetCredits {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 2px;
+}
+
+.codexResetCreditsTitle {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  line-height: 1.35;
+}
+
+.codexResetCreditRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: $spacing-sm;
+  padding: 6px 8px;
+  border: 1px solid color-mix(in srgb, var(--border-color) 72%, transparent);
+  border-radius: $radius-sm;
+  background-color: color-mix(in srgb, var(--bg-secondary) 72%, transparent);
+  font-size: 12px;
+  line-height: 1.35;
+  min-width: 0;
+}
+
+.codexResetCreditLabel {
+  color: var(--text-tertiary);
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.codexResetCreditTime {
+  color: var(--text-primary);
+  font-weight: 600;
+  text-align: right;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+.codexResetCreditsError {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--warning-text);
+  background-color: var(--warning-bg);
+  border: 1px solid var(--warning-border);
+  border-radius: $radius-sm;
+  padding: $spacing-xs $spacing-sm;
+}
+
+.codexPlanSeparator {
+  width: 1px;
+  height: 12px;
+  background-color: var(--border-color);
 }
 
 .premiumPlanValue {
@@ -439,6 +551,8 @@
   font-size: 12px;
   padding: 2px 8px;
   border-radius: 999px;
+  white-space: nowrap;
+  flex: 0 0 auto;
   overflow: visible;
   isolation: isolate;
   background:
@@ -591,6 +705,43 @@
   }
 }
 
+@include mobile {
+  .premiumPlanValue {
+    overflow: hidden;
+    background:
+      radial-gradient(
+        circle at 18% 24%,
+        rgba(255, 255, 255, 0.88) 0%,
+        rgba(255, 255, 255, 0.58) 18%,
+        rgba(255, 255, 255, 0) 42%
+      ),
+      linear-gradient(135deg, #fff9e3 0%, #ffe07f 52%, #e0aa14 100%);
+    box-shadow:
+      0 1px 3px rgba(133, 92, 0, 0.16),
+      0 0 0 1px rgba(255, 255, 255, 0.22) inset,
+      0 0 10px rgba(255, 214, 98, 0.22);
+
+    &::before {
+      content: none;
+    }
+  }
+
+  :global([data-theme='dark']) .premiumPlanValue {
+    background:
+      radial-gradient(
+        circle at 18% 24%,
+        rgba(255, 229, 138, 0.28) 0%,
+        rgba(255, 214, 98, 0.14) 18%,
+        rgba(255, 214, 98, 0) 44%
+      ),
+      linear-gradient(135deg, #4f3d0b 0%, #6e5510 48%, #8f6d10 100%);
+    box-shadow:
+      0 1px 6px rgba(0, 0, 0, 0.28),
+      0 0 0 1px rgba(255, 220, 120, 0.16) inset,
+      0 0 10px rgba(255, 196, 44, 0.18);
+  }
+}
+
 .fileCard {
   background-color: var(--bg-primary);
   border: 1px solid var(--border-color);
@@ -599,7 +750,10 @@
   display: flex;
   flex-direction: column;
   gap: $spacing-sm;
-  transition: transform $transition-fast, box-shadow $transition-fast, border-color $transition-fast;
+  transition:
+    transform $transition-fast,
+    box-shadow $transition-fast,
+    border-color $transition-fast;
 
   &:hover {
     transform: translateY(-2px);

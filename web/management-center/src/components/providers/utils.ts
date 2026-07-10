@@ -1,33 +1,16 @@
-import type { TFunction } from 'i18next';
-import type {
-  AmpcodeConfig,
-  AmpcodeModelMapping,
-  AmpcodeUpstreamApiKeyMapping,
-  ApiKeyEntry,
-  BackoffMode,
-  OpenAIProviderConfig,
-} from '@/types';
-import type { ApiCallRequest, ApiCallResult } from '@/services/api/apiCall';
+import type { OpenAIProviderConfig } from '@/types';
 import {
-  buildUsage20mIdentityCandidates,
-  buildCandidateUsageSourceIds,
-  calculateStatusBarData,
-  calculateStatusBarDataFromUsage20m,
-  normalizeAuthIndex,
-  type KeyStatBucket,
-  type KeyStats,
+  buildRecentRequestCompositeKey,
+  mergeRecentRequestBucketGroups,
+  statusBarDataFromRecentRequests,
+  sumRecentRequests,
+  type RecentRequestBucket,
+  type RecentRequestUsageEntry,
   type StatusBarData,
-  type UsageDetail,
-} from '@/utils/usage';
-import {
-  collectUsageDetailsForAuthIndices,
-  collectUsageDetailsForCandidates,
-  type UsageDetailsByAuthIndex,
-  type UsageDetailsBySource,
-} from '@/utils/usageIndex';
-import type { AmpcodeFormState, AmpcodeUpstreamApiKeyEntry, ModelEntry } from './types';
+} from '@/utils/recentRequests';
 
-export const DISABLE_ALL_MODELS_RULE = '*';
+const DISABLE_ALL_MODELS_RULE = '*';
+const DEFAULT_GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com';
 
 export const hasDisableAllModelsRule = (models?: string[]) =>
   Array.isArray(models) &&
@@ -43,33 +26,11 @@ export const withDisableAllModelsRule = (models?: string[]) => {
   return [...base, DISABLE_ALL_MODELS_RULE];
 };
 
-export const withoutDisableAllModelsRule = (models?: string[]) => {
-  const base = stripDisableAllModelsRule(models);
-  return base;
-};
+export const withoutDisableAllModelsRule = (models?: string[]) => stripDisableAllModelsRule(models);
 
-export const parseTextList = (text: string): string[] =>
-  text
-    .split(/[\n,]+/)
-    .map((item) => item.trim())
-    .filter(Boolean);
-
-export const parseExcludedModels = parseTextList;
-
-export const excludedModelsToText = (models?: string[]) =>
-  Array.isArray(models) ? models.join('\n') : '';
-
-export const excludedModelsTextForEnabledState = (text: string, enabled: boolean) => {
-  const models = parseExcludedModels(text);
-  const nextModels = enabled
-    ? withoutDisableAllModelsRule(models)
-    : withDisableAllModelsRule(models);
-  return excludedModelsToText(nextModels);
-};
-
-export const normalizeOpenAIBaseUrl = (baseUrl: string): string => {
+const normalizeUpstreamBaseUrl = (baseUrl: string, fallback = ''): string => {
   let trimmed = String(baseUrl || '').trim();
-  if (!trimmed) return '';
+  if (!trimmed) return fallback;
   trimmed = trimmed.replace(/\/?v0\/management\/?$/i, '');
   trimmed = trimmed.replace(/\/+$/g, '');
   if (!/^https?:\/\//i.test(trimmed)) {
@@ -78,27 +39,22 @@ export const normalizeOpenAIBaseUrl = (baseUrl: string): string => {
   return trimmed;
 };
 
-export const normalizeClaudeBaseUrl = (baseUrl: string): string => {
-  let trimmed = String(baseUrl || '').trim();
-  if (!trimmed) {
-    return 'https://api.anthropic.com';
-  }
-  trimmed = trimmed.replace(/\/?v0\/management\/?$/i, '');
-  trimmed = trimmed.replace(/\/+$/g, '');
-  if (!/^https?:\/\//i.test(trimmed)) {
-    trimmed = `http://${trimmed}`;
-  }
-  return trimmed;
-};
-
-export const buildOpenAIModelsEndpoint = (baseUrl: string): string => {
-  const trimmed = normalizeOpenAIBaseUrl(baseUrl);
+const buildGeminiModelResource = (model: string): string => {
+  const trimmed = String(model || '')
+    .trim()
+    .replace(/^\/+/g, '')
+    .replace(/:generateContent$/i, '');
   if (!trimmed) return '';
-  return `${trimmed}/models`;
+
+  if (/^(models|tunedModels)\//i.test(trimmed)) {
+    return trimmed.split('/').map(encodeURIComponent).join('/');
+  }
+
+  return `models/${encodeURIComponent(trimmed)}`;
 };
 
 export const buildOpenAIChatCompletionsEndpoint = (baseUrl: string): string => {
-  const trimmed = normalizeOpenAIBaseUrl(baseUrl);
+  const trimmed = normalizeUpstreamBaseUrl(baseUrl);
   if (!trimmed) return '';
   if (trimmed.endsWith('/chat/completions')) {
     return trimmed;
@@ -106,23 +62,23 @@ export const buildOpenAIChatCompletionsEndpoint = (baseUrl: string): string => {
   return `${trimmed}/chat/completions`;
 };
 
-export const buildOpenAIResponsesEndpoint = (baseUrl: string, useV1 = true): string => {
-  const trimmed = normalizeOpenAIBaseUrl(baseUrl);
+export const buildCodexResponsesEndpoint = (baseUrl: string): string => {
+  const trimmed = normalizeUpstreamBaseUrl(baseUrl);
   if (!trimmed) return '';
-  if (trimmed.endsWith('/responses')) {
+  if (/\/v1\/responses$/i.test(trimmed)) {
     return trimmed;
   }
-  if (trimmed.endsWith('/v1')) {
-    return `${trimmed}/responses`;
+  if (/\/v1\/models$/i.test(trimmed)) {
+    return trimmed.replace(/\/models$/i, '/responses');
   }
-  if (!useV1) {
+  if (/\/v1$/i.test(trimmed)) {
     return `${trimmed}/responses`;
   }
   return `${trimmed}/v1/responses`;
 };
 
 export const buildClaudeMessagesEndpoint = (baseUrl: string): string => {
-  const trimmed = normalizeClaudeBaseUrl(baseUrl);
+  const trimmed = normalizeUpstreamBaseUrl(baseUrl, 'https://api.anthropic.com');
   if (!trimmed) return '';
   if (trimmed.endsWith('/v1/messages')) {
     return trimmed;
@@ -133,378 +89,141 @@ export const buildClaudeMessagesEndpoint = (baseUrl: string): string => {
   return `${trimmed}/v1/messages`;
 };
 
-export const normalizeBackoffMode = (value: unknown): BackoffMode => {
-  if (value === 'off' || value === 'custom') {
-    return value;
+export const buildGeminiGenerateContentEndpoint = (baseUrl: string, model: string): string => {
+  const resource = buildGeminiModelResource(model);
+  if (!resource) return '';
+
+  const trimmed = normalizeUpstreamBaseUrl(baseUrl, DEFAULT_GEMINI_BASE_URL);
+  if (!trimmed) return '';
+  if (/:generateContent$/i.test(trimmed)) {
+    return trimmed;
   }
-  return 'default';
+
+  let root = trimmed.replace(/\/+$/g, '');
+  if (/\/v1beta\/models$/i.test(root)) {
+    root = root.replace(/\/models$/i, '');
+  } else if (!/\/v1beta$/i.test(root)) {
+    root = root.replace(/\/v1beta(?:\/.*)?$/i, '');
+    root = `${root}/v1beta`;
+  }
+
+  return `${root}/${resource}:generateContent`;
 };
 
-export const normalizeRequestRetry = (value: unknown, fallback: number = 2): number => {
-  if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
-    return Math.trunc(value);
-  }
-  if (typeof value === 'string') {
-    const trimmed = value.trim();
-    if (trimmed) {
-      const parsed = Number(trimmed);
-      if (Number.isFinite(parsed) && parsed >= 0) {
-        return Math.trunc(parsed);
-      }
-    }
-  }
-  return fallback;
+export type ProviderRecentUsageMap = Map<string, Map<string, RecentRequestUsageEntry>>;
+
+const EMPTY_RECENT_USAGE_ENTRY: RecentRequestUsageEntry = {
+  success: 0,
+  failed: 0,
+  recentRequests: [],
 };
 
-export const buildBackoffModeOptions = (
-  t: TFunction
-): Array<{ value: BackoffMode; label: string }> => [
-  { value: 'default', label: t('ai_providers.backoff_mode_default') },
-  { value: 'off', label: t('ai_providers.backoff_mode_off') },
-  { value: 'custom', label: t('ai_providers.backoff_mode_custom') },
-];
+const normalizeProviderRecentKey = (value: unknown): string =>
+  String(value ?? '')
+    .trim()
+    .toLowerCase();
 
-const escapeShellSingleQuotes = (value: string) => value.replace(/'/g, `'\\''`);
-
-export const buildApiCallCommandPreview = (request: ApiCallRequest): string => {
-  const lines = [
-    `curl -X ${request.method.toUpperCase()} '${escapeShellSingleQuotes(request.url)}'`,
-  ];
-  if (request.proxyUrl) {
-    lines.push(`  --proxy '${escapeShellSingleQuotes(request.proxyUrl)}'`);
-  }
-  const headers = Object.entries(request.header ?? {});
-  headers.forEach(([key, value]) => {
-    lines.push(`  -H '${escapeShellSingleQuotes(`${key}: ${value}`)}'`);
-  });
-  if (request.data) {
-    lines.push(`  --data '${escapeShellSingleQuotes(request.data)}'`);
-  }
-  return lines.join(' \\\n');
-};
-
-export const formatApiCallResultPreview = (result: ApiCallResult): string => {
-  const headers = Object.entries(result.header ?? {})
-    .map(([key, values]) => `${key}: ${Array.isArray(values) ? values.join(', ') : ''}`)
-    .join('\n');
-  const bodyText = result.bodyText || '';
-  return [
-    `Status: ${result.statusCode}`,
-    headers ? `Headers:\n${headers}` : '',
-    bodyText ? `Body:\n${bodyText}` : '',
-  ]
-    .filter(Boolean)
-    .join('\n\n');
-};
-
-// Resolve usage stats by source/API key, matching the legacy behavior.
-export const getStatsBySource = (
-  apiKey: string,
-  keyStats: KeyStats,
-  prefix?: string
-): KeyStatBucket => {
-  const bySource = keyStats.bySource ?? {};
-  const candidates = buildCandidateUsageSourceIds({ apiKey, prefix });
-  if (!candidates.length) {
-    return { success: 0, failure: 0 };
+const getProviderRecentUsageEntry = (
+  usageByProvider: ProviderRecentUsageMap,
+  provider: string,
+  apiKey?: string,
+  baseUrl?: string
+): RecentRequestUsageEntry => {
+  if (!String(apiKey ?? '').trim()) {
+    return EMPTY_RECENT_USAGE_ENTRY;
   }
 
-  let success = 0;
-  let failure = 0;
-  candidates.forEach((candidate) => {
-    const stats = bySource[candidate];
-    if (!stats) return;
-    success += stats.success;
-    failure += stats.failure;
-  });
-
-  return { success, failure };
+  const providerKey = normalizeProviderRecentKey(provider);
+  const compositeKey = buildRecentRequestCompositeKey(baseUrl, apiKey);
+  return usageByProvider.get(providerKey)?.get(compositeKey) ?? EMPTY_RECENT_USAGE_ENTRY;
 };
 
-type UsageIdentity = {
-  authIndex?: unknown;
-  apiKey?: string;
-  prefix?: string;
-};
+const getProviderRecentBuckets = (
+  usageByProvider: ProviderRecentUsageMap,
+  provider: string,
+  apiKey?: string,
+  baseUrl?: string
+): RecentRequestBucket[] =>
+  getProviderRecentUsageEntry(usageByProvider, provider, apiKey, baseUrl).recentRequests;
 
-export const getStatsForIdentity = (identity: UsageIdentity, keyStats: KeyStats): KeyStatBucket => {
-  const authIndexKey = normalizeAuthIndex(identity.authIndex);
-  if (authIndexKey) {
-    const stats = keyStats.byAuthIndex?.[authIndexKey];
-    if (stats) {
-      return { success: stats.success, failure: stats.failure };
-    }
-  }
+export function getProviderRecentStatusData(
+  usageByProvider: ProviderRecentUsageMap,
+  provider: string,
+  apiKey?: string,
+  baseUrl?: string
+): StatusBarData {
+  return statusBarDataFromRecentRequests(
+    getProviderRecentBuckets(usageByProvider, provider, apiKey, baseUrl)
+  );
+}
 
-  return getStatsBySource(identity.apiKey ?? '', keyStats, identity.prefix);
-};
+export function getProviderTotalStats(
+  usageByProvider: ProviderRecentUsageMap,
+  provider: string,
+  apiKey?: string,
+  baseUrl?: string
+): { success: number; failure: number } {
+  const entry = getProviderRecentUsageEntry(usageByProvider, provider, apiKey, baseUrl);
+  return { success: entry.success, failure: entry.failed };
+}
 
-export const collectUsageDetailsForIdentity = (
-  identity: UsageIdentity,
-  usageDetailsBySource: UsageDetailsBySource,
-  usageDetailsByAuthIndex: UsageDetailsByAuthIndex
-): UsageDetail[] => {
-  const authIndexKey = normalizeAuthIndex(identity.authIndex);
-  if (authIndexKey) {
-    const details = collectUsageDetailsForAuthIndices(usageDetailsByAuthIndex, [authIndexKey]);
-    if (details.length > 0) {
-      return details;
-    }
-  }
+export function getProviderRecentWindowStats(
+  usageByProvider: ProviderRecentUsageMap,
+  provider: string,
+  apiKey?: string,
+  baseUrl?: string
+): { success: number; failure: number } {
+  return sumRecentRequests(getProviderRecentBuckets(usageByProvider, provider, apiKey, baseUrl));
+}
 
-  const candidates = buildCandidateUsageSourceIds({
-    apiKey: identity.apiKey,
-    prefix: identity.prefix,
-  });
-  if (!candidates.length) {
+const collectOpenAIProviderRecentBuckets = (
+  provider: OpenAIProviderConfig,
+  usageByProvider: ProviderRecentUsageMap
+): RecentRequestBucket[] => {
+  if (!provider.apiKeyEntries?.length) {
     return [];
   }
 
-  return collectUsageDetailsForCandidates(usageDetailsBySource, candidates);
-};
-
-export const calculateStatusBarDataForIdentity = (
-  identity: UsageIdentity,
-  usageData: unknown,
-  provider: string,
-  usageDetailsBySource: UsageDetailsBySource,
-  usageDetailsByAuthIndex: UsageDetailsByAuthIndex
-): StatusBarData => {
-  const bucketStatus = calculateStatusBarDataFromUsage20m(
-    usageData,
-    buildUsage20mIdentityCandidates(identity),
-    { provider }
+  const groups = provider.apiKeyEntries.map((entry) =>
+    getProviderRecentBuckets(usageByProvider, provider.name, entry.apiKey, provider.baseUrl)
   );
-  if (bucketStatus) {
-    return bucketStatus;
-  }
-  return calculateStatusBarData(
-    collectUsageDetailsForIdentity(identity, usageDetailsBySource, usageDetailsByAuthIndex)
+
+  return mergeRecentRequestBucketGroups(groups);
+};
+
+export function getOpenAIProviderRecentWindowStats(
+  provider: OpenAIProviderConfig,
+  usageByProvider: ProviderRecentUsageMap
+): { success: number; failure: number } {
+  return sumRecentRequests(collectOpenAIProviderRecentBuckets(provider, usageByProvider));
+}
+
+export function getOpenAIProviderTotalStats(
+  provider: OpenAIProviderConfig,
+  usageByProvider: ProviderRecentUsageMap
+): { success: number; failure: number } {
+  return (provider.apiKeyEntries || []).reduce(
+    (total, entry) => {
+      const usageEntry = getProviderRecentUsageEntry(
+        usageByProvider,
+        provider.name,
+        entry.apiKey,
+        provider.baseUrl
+      );
+      return {
+        success: total.success + usageEntry.success,
+        failure: total.failure + usageEntry.failed,
+      };
+    },
+    { success: 0, failure: 0 }
   );
-};
+}
 
-export const calculateStatusBarDataForOpenAIProvider = (
+export function getOpenAIProviderRecentStatusData(
   provider: OpenAIProviderConfig,
-  usageData: unknown,
-  usageDetailsBySource: UsageDetailsBySource,
-  usageDetailsByAuthIndex: UsageDetailsByAuthIndex
-): StatusBarData => {
-  const identities: UsageIdentity[] = [];
-  if (!provider.apiKeyEntries?.length) {
-    identities.push({ authIndex: provider.authIndex, prefix: provider.prefix });
-  } else {
-    if (!normalizeAuthIndex(provider.authIndex) && provider.prefix) {
-      identities.push({ prefix: provider.prefix });
-    }
-    provider.apiKeyEntries.forEach((entry) => {
-      identities.push({ authIndex: entry.authIndex, apiKey: entry.apiKey });
-    });
-  }
-
-  const bucketKeys = identities.flatMap((identity) => buildUsage20mIdentityCandidates(identity));
-  const bucketStatus = calculateStatusBarDataFromUsage20m(usageData, bucketKeys, {
-    provider: 'openai',
-  });
-  if (bucketStatus) {
-    return bucketStatus;
-  }
-  return calculateStatusBarData(
-    collectOpenAIProviderUsageDetails(provider, usageDetailsBySource, usageDetailsByAuthIndex)
+  usageByProvider: ProviderRecentUsageMap
+): StatusBarData {
+  return statusBarDataFromRecentRequests(
+    collectOpenAIProviderRecentBuckets(provider, usageByProvider)
   );
-};
-
-const mergeUsageDetails = (groups: UsageDetail[][]): UsageDetail[] => {
-  let firstDetails: UsageDetail[] | null = null;
-  let merged: UsageDetail[] | null = null;
-
-  groups.forEach((details) => {
-    if (!details.length) return;
-    if (!firstDetails) {
-      firstDetails = details;
-      return;
-    }
-    if (!merged) {
-      merged = [...firstDetails];
-    }
-    merged.push(...details);
-  });
-
-  return merged ?? firstDetails ?? [];
-};
-
-// Aggregate all apiKeyEntries for OpenAI providers, matching the legacy behavior.
-export const getOpenAIProviderStats = (
-  provider: OpenAIProviderConfig,
-  keyStats: KeyStats
-): KeyStatBucket => {
-  let success = 0;
-  let failure = 0;
-
-  if (!provider.apiKeyEntries?.length) {
-    const stats = getStatsForIdentity(
-      { authIndex: provider.authIndex, prefix: provider.prefix },
-      keyStats
-    );
-    return { success: stats.success, failure: stats.failure };
-  }
-
-  if (!normalizeAuthIndex(provider.authIndex) && provider.prefix) {
-    const prefixStats = getStatsBySource('', keyStats, provider.prefix);
-    success += prefixStats.success;
-    failure += prefixStats.failure;
-  }
-
-  provider.apiKeyEntries.forEach((entry) => {
-    const stats = getStatsForIdentity(
-      { authIndex: entry.authIndex, apiKey: entry.apiKey },
-      keyStats
-    );
-    success += stats.success;
-    failure += stats.failure;
-  });
-
-  return { success, failure };
-};
-
-export const collectOpenAIProviderUsageDetails = (
-  provider: OpenAIProviderConfig,
-  usageDetailsBySource: UsageDetailsBySource,
-  usageDetailsByAuthIndex: UsageDetailsByAuthIndex
-): UsageDetail[] => {
-  if (!provider.apiKeyEntries?.length) {
-    return collectUsageDetailsForIdentity(
-      { authIndex: provider.authIndex, prefix: provider.prefix },
-      usageDetailsBySource,
-      usageDetailsByAuthIndex
-    );
-  }
-
-  const groups: UsageDetail[][] = [];
-  if (!normalizeAuthIndex(provider.authIndex) && provider.prefix) {
-    groups.push(
-      collectUsageDetailsForIdentity(
-        { prefix: provider.prefix },
-        usageDetailsBySource,
-        usageDetailsByAuthIndex
-      )
-    );
-  }
-
-  provider.apiKeyEntries.forEach((entry) => {
-    groups.push(
-      collectUsageDetailsForIdentity(
-        { authIndex: entry.authIndex, apiKey: entry.apiKey },
-        usageDetailsBySource,
-        usageDetailsByAuthIndex
-      )
-    );
-  });
-
-  return mergeUsageDetails(groups);
-};
-
-export const getProviderConfigKey = (
-  config: {
-    authIndex?: unknown;
-    apiKey?: string;
-    baseUrl?: string;
-    proxyUrl?: string;
-  },
-  index: number
-): string => {
-  const authIndexKey = normalizeAuthIndex(config.authIndex);
-  if (authIndexKey) {
-    return authIndexKey;
-  }
-  return `${config.apiKey ?? ''}::${config.baseUrl ?? ''}::${config.proxyUrl ?? ''}::${index}`;
-};
-
-export const getOpenAIProviderKey = (provider: OpenAIProviderConfig, index: number): string => {
-  const authIndexKey = normalizeAuthIndex(provider.authIndex);
-  if (authIndexKey) {
-    return authIndexKey;
-  }
-  return `${provider.name}::${provider.baseUrl}::${provider.prefix ?? ''}::${index}`;
-};
-
-export const getOpenAIEntryKey = (entry: ApiKeyEntry, index: number): string => {
-  const authIndexKey = normalizeAuthIndex(entry.authIndex);
-  if (authIndexKey) {
-    return authIndexKey;
-  }
-  return `${entry.apiKey}::${entry.proxyUrl ?? ''}::${index}`;
-};
-
-export const buildApiKeyEntry = (input?: Partial<ApiKeyEntry>): ApiKeyEntry => ({
-  apiKey: input?.apiKey ?? '',
-  proxyUrl: input?.proxyUrl ?? '',
-  headers: input?.headers ?? {},
-});
-
-export const ampcodeMappingsToEntries = (mappings?: AmpcodeModelMapping[]): ModelEntry[] => {
-  if (!Array.isArray(mappings) || mappings.length === 0) {
-    return [{ name: '', alias: '' }];
-  }
-  return mappings.map((mapping) => ({
-    name: mapping.from ?? '',
-    alias: mapping.to ?? '',
-  }));
-};
-
-export const entriesToAmpcodeMappings = (entries: ModelEntry[]): AmpcodeModelMapping[] => {
-  const seen = new Set<string>();
-  const mappings: AmpcodeModelMapping[] = [];
-
-  entries.forEach((entry) => {
-    const from = entry.name.trim();
-    const to = entry.alias.trim();
-    if (!from || !to) return;
-    const key = from.toLowerCase();
-    if (seen.has(key)) return;
-    seen.add(key);
-    mappings.push({ from, to });
-  });
-
-  return mappings;
-};
-
-export const ampcodeUpstreamApiKeysToEntries = (
-  mappings?: AmpcodeUpstreamApiKeyMapping[]
-): AmpcodeUpstreamApiKeyEntry[] => {
-  if (!Array.isArray(mappings) || mappings.length === 0) {
-    return [{ upstreamApiKey: '', clientApiKeysText: '' }];
-  }
-
-  return mappings.map((mapping) => ({
-    upstreamApiKey: mapping.upstreamApiKey ?? '',
-    clientApiKeysText: Array.isArray(mapping.apiKeys) ? mapping.apiKeys.join('\n') : '',
-  }));
-};
-
-export const entriesToAmpcodeUpstreamApiKeys = (
-  entries: AmpcodeUpstreamApiKeyEntry[]
-): AmpcodeUpstreamApiKeyMapping[] => {
-  const seen = new Set<string>();
-  const mappings: AmpcodeUpstreamApiKeyMapping[] = [];
-
-  entries.forEach((entry) => {
-    const upstreamApiKey = String(entry?.upstreamApiKey ?? '').trim();
-    if (!upstreamApiKey || seen.has(upstreamApiKey)) return;
-
-    const apiKeys = Array.from(new Set(parseTextList(String(entry?.clientApiKeysText ?? ''))));
-    if (!apiKeys.length) return;
-
-    seen.add(upstreamApiKey);
-    mappings.push({ upstreamApiKey, apiKeys });
-  });
-
-  return mappings;
-};
-
-export const buildAmpcodeFormState = (ampcode?: AmpcodeConfig | null): AmpcodeFormState => ({
-  upstreamUrl: ampcode?.upstreamUrl ?? '',
-  upstreamApiKey: '',
-  forceModelMappings: ampcode?.forceModelMappings ?? false,
-  mappingEntries: ampcodeMappingsToEntries(ampcode?.modelMappings),
-  upstreamApiKeyEntries: ampcodeUpstreamApiKeysToEntries(ampcode?.upstreamApiKeys),
-});
+}

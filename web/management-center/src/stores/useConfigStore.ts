@@ -37,9 +37,7 @@ const SECTION_KEYS: RawConfigSection[] = [
   'debug',
   'proxy-url',
   'request-retry',
-  'provider-cooldown',
   'quota-exceeded',
-  'usage-statistics-enabled',
   'request-log',
   'logging-to-file',
   'logs-max-total-size-mb',
@@ -48,16 +46,14 @@ const SECTION_KEYS: RawConfigSection[] = [
   'codex-remove-empty-input-name',
   'routing/strategy',
   'routing/rules',
-  'default-test-models',
   'auth-files-group',
   'api-keys',
-  'ampcode',
   'gemini-api-key',
   'codex-api-key',
   'claude-api-key',
   'vertex-api-key',
   'openai-compatibility',
-  'oauth-excluded-models'
+  'oauth-excluded-models',
 ];
 
 const extractSectionValue = (config: Config | null, section?: RawConfigSection) => {
@@ -69,12 +65,8 @@ const extractSectionValue = (config: Config | null, section?: RawConfigSection) 
       return config.proxyUrl;
     case 'request-retry':
       return config.requestRetry;
-    case 'provider-cooldown':
-      return config.providerCooldown;
     case 'quota-exceeded':
       return config.quotaExceeded;
-    case 'usage-statistics-enabled':
-      return config.usageStatisticsEnabled;
     case 'request-log':
       return config.requestLog;
     case 'logging-to-file':
@@ -91,14 +83,10 @@ const extractSectionValue = (config: Config | null, section?: RawConfigSection) 
       return config.routingStrategy;
     case 'routing/rules':
       return config.routingRules;
-    case 'default-test-models':
-      return config.defaultTestModels;
     case 'auth-files-group':
       return config.authFilesGroup;
     case 'api-keys':
       return config.apiKeys;
-    case 'ampcode':
-      return config.ampcode;
     case 'gemini-api-key':
       return config.geminiApiKeys;
     case 'codex-api-key':
@@ -177,17 +165,21 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
       set({
         config: data,
         cache: newCache,
-        loading: false
+        loading: false,
       });
 
       return section ? extractSectionValue(data, section) : data;
     } catch (error: unknown) {
       const message =
-        error instanceof Error ? error.message : typeof error === 'string' ? error : 'Failed to fetch config';
+        error instanceof Error
+          ? error.message
+          : typeof error === 'string'
+            ? error
+            : 'Failed to fetch config';
       if (requestId === configRequestToken) {
         set({
           error: message || 'Failed to fetch config',
-          loading: false
+          loading: false,
         });
       }
       throw error;
@@ -214,14 +206,8 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
         case 'request-retry':
           nextConfig.requestRetry = value as Config['requestRetry'];
           break;
-        case 'provider-cooldown':
-          nextConfig.providerCooldown = value as Config['providerCooldown'];
-          break;
         case 'quota-exceeded':
           nextConfig.quotaExceeded = value as Config['quotaExceeded'];
-          break;
-        case 'usage-statistics-enabled':
-          nextConfig.usageStatisticsEnabled = value as Config['usageStatisticsEnabled'];
           break;
         case 'request-log':
           nextConfig.requestLog = value as Config['requestLog'];
@@ -247,17 +233,11 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
         case 'routing/rules':
           nextConfig.routingRules = value as Config['routingRules'];
           break;
-        case 'default-test-models':
-          nextConfig.defaultTestModels = value as Config['defaultTestModels'];
-          break;
         case 'auth-files-group':
           nextConfig.authFilesGroup = value as Config['authFilesGroup'];
           break;
         case 'api-keys':
           nextConfig.apiKeys = value as Config['apiKeys'];
-          break;
-        case 'ampcode':
-          nextConfig.ampcode = value as Config['ampcode'];
           break;
         case 'gemini-api-key':
           nextConfig.geminiApiKeys = value as Config['geminiApiKeys'];
@@ -323,5 +303,5 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
     if (!cached) return false;
 
     return Date.now() - cached.timestamp < CACHE_EXPIRY_MS;
-  }
+  },
 }));

@@ -3,13 +3,13 @@ import { Modal } from '@/components/ui/Modal';
 import { Button } from '@/components/ui/Button';
 import { LoadingSpinner } from '@/components/ui/LoadingSpinner';
 import { Input } from '@/components/ui/Input';
-import { Select } from '@/components/ui/Select';
 import { ToggleSwitch } from '@/components/ui/ToggleSwitch';
 import type {
   PrefixProxyEditorField,
   PrefixProxyEditorFieldValue,
   PrefixProxyEditorState,
 } from '@/features/authFiles/hooks/useAuthFilesPrefixProxyEditor';
+import { supportsAuthFileWebsockets } from '@/features/authFiles/constants';
 import styles from '@/pages/AuthFilesPage.module.scss';
 
 export type AuthFilesPrefixProxyEditorModalProps = {
@@ -27,11 +27,6 @@ export function AuthFilesPrefixProxyEditorModal(props: AuthFilesPrefixProxyEdito
   const { t } = useTranslation();
   const { disableControls, editor, updatedText, dirty, onClose, onCopyText, onSave, onChange } =
     props;
-  const backoffModeOptions = [
-    { value: 'default', label: t('ai_providers.backoff_mode_default') },
-    { value: 'off', label: t('ai_providers.backoff_mode_off') },
-    { value: 'custom', label: t('ai_providers.backoff_mode_custom') },
-  ];
   const formatJsonText = (text: string) => {
     if (!text) return '';
     try {
@@ -41,6 +36,7 @@ export function AuthFilesPrefixProxyEditorModal(props: AuthFilesPrefixProxyEdito
     }
   };
   const previewText = formatJsonText(updatedText);
+  const invalidContentPreview = editor?.invalidContentPreview ?? '';
 
   return (
     <Modal
@@ -107,114 +103,82 @@ export function AuthFilesPrefixProxyEditorModal(props: AuthFilesPrefixProxyEdito
               </div>
               <div className={styles.prefixProxyJsonWrapper}>
                 <label className={styles.prefixProxyLabel}>
-                  {t('auth_files.prefix_proxy_source_label')}
+                  {editor.json
+                    ? t('auth_files.prefix_proxy_source_label')
+                    : t('auth_files.prefix_proxy_invalid_content_label')}
                 </label>
-                <textarea
-                  className={styles.prefixProxyTextarea}
-                  rows={10}
-                  readOnly
-                  value={previewText}
-                />
+                {editor.json ? (
+                  <textarea
+                    className={styles.prefixProxyTextarea}
+                    rows={10}
+                    readOnly
+                    value={previewText}
+                  />
+                ) : (
+                  <pre className={styles.prefixProxyInvalidContentPreview}>
+                    {invalidContentPreview}
+                  </pre>
+                )}
               </div>
-              <div className={styles.prefixProxyFields}>
-                <div className="form-group">
-                  <label>{t('auth_files.enabled_label')}</label>
-                  <ToggleSwitch
-                    checked={editor.enabled}
-                    disabled={disableControls || editor.saving || !editor.json}
-                    ariaLabel={t('auth_files.enabled_label')}
-                    onChange={(value) => onChange('enabled', value)}
-                  />
-                </div>
-                <Input
-                  label={t('auth_files.prefix_label')}
-                  value={editor.prefix}
-                  disabled={disableControls || editor.saving || !editor.json}
-                  onChange={(e) => onChange('prefix', e.target.value)}
-                />
-                <Input
-                  label={t('auth_files.proxy_url_label')}
-                  value={editor.proxyUrl}
-                  placeholder={t('auth_files.proxy_url_placeholder')}
-                  disabled={disableControls || editor.saving || !editor.json}
-                  onChange={(e) => onChange('proxyUrl', e.target.value)}
-                />
-                <Input
-                  label={t('auth_files.priority_label')}
-                  value={editor.priority}
-                  placeholder={t('auth_files.priority_placeholder')}
-                  hint={t('auth_files.priority_hint')}
-                  disabled={disableControls || editor.saving || !editor.json}
-                  onChange={(e) => onChange('priority', e.target.value)}
-                />
-                <div className="form-group">
-                  <label>{t('ai_providers.backoff_mode_label')}</label>
-                  <Select
-                    value={editor.backoffMode}
-                    options={backoffModeOptions}
-                    onChange={(value) => onChange('backoffMode', value)}
-                    ariaLabel={t('ai_providers.backoff_mode_label')}
-                    disabled={disableControls || editor.saving || !editor.json}
-                  />
-                  <div className="hint">{t('ai_providers.backoff_mode_hint')}</div>
-                </div>
-                {editor.backoffMode === 'custom' && (
+              {editor.json && (
+                <div className={styles.prefixProxyFields}>
                   <Input
-                    label={t('ai_providers.request_retry_label')}
-                    value={editor.requestRetry}
-                    placeholder="2"
-                    hint={t('ai_providers.request_retry_hint')}
+                    label={t('auth_files.prefix_label')}
+                    value={editor.prefix}
                     disabled={disableControls || editor.saving || !editor.json}
-                    onChange={(e) => onChange('requestRetry', e.target.value)}
+                    onChange={(e) => onChange('prefix', e.target.value)}
                   />
-                )}
-                <div className="form-group">
-                  <label>{t('auth_files.excluded_models_label')}</label>
-                  <textarea
-                    className="input"
-                    value={editor.excludedModelsText}
-                    placeholder={t('auth_files.excluded_models_placeholder')}
-                    rows={4}
+                  <Input
+                    label={t('auth_files.proxy_url_label')}
+                    value={editor.proxyUrl}
+                    placeholder={t('auth_files.proxy_url_placeholder')}
                     disabled={disableControls || editor.saving || !editor.json}
-                    onChange={(e) => onChange('excludedModelsText', e.target.value)}
+                    onChange={(e) => onChange('proxyUrl', e.target.value)}
                   />
-                  <div className="hint">{t('auth_files.excluded_models_hint')}</div>
-                </div>
-                <div className="form-group">
-                  <label>{t('auth_files.headers_label')}</label>
-                  <textarea
-                    className={`input ${editor.headersError ? styles.prefixProxyTextareaInvalid : ''}`}
-                    value={editor.headersText}
-                    placeholder={t('auth_files.headers_placeholder')}
-                    rows={4}
-                    aria-invalid={Boolean(editor.headersError)}
+                  <Input
+                    label={t('auth_files.priority_label')}
+                    value={editor.priority}
+                    placeholder={t('auth_files.priority_placeholder')}
+                    hint={t('auth_files.priority_hint')}
                     disabled={disableControls || editor.saving || !editor.json}
-                    onChange={(e) => onChange('headersText', e.target.value)}
+                    onChange={(e) => onChange('priority', e.target.value)}
                   />
-                  {editor.headersError && <div className="error-box">{editor.headersError}</div>}
-                  <div className="hint">{t('auth_files.headers_hint')}</div>
-                </div>
-                <Input
-                  label={t('auth_files.note_label')}
-                  value={editor.note}
-                  placeholder={t('auth_files.note_placeholder')}
-                  hint={t('auth_files.note_hint')}
-                  disabled={disableControls || editor.saving || !editor.json}
-                  onChange={(e) => onChange('note', e.target.value)}
-                />
-                {editor.isCodexFile && (
+                  {supportsAuthFileWebsockets(editor.providerKey) && (
+                    <div className="form-group">
+                      <label>{t('auth_files.websockets_label')}</label>
+                      <ToggleSwitch
+                        checked={editor.websockets}
+                        onChange={(value) => onChange('websockets', value)}
+                        disabled={disableControls || editor.saving || !editor.json}
+                        ariaLabel={t('auth_files.websockets_label')}
+                      />
+                      <div className="hint">{t('auth_files.websockets_hint')}</div>
+                    </div>
+                  )}
                   <div className="form-group">
-                    <label>{t('ai_providers.codex_websockets_label')}</label>
-                    <ToggleSwitch
-                      checked={Boolean(editor.websockets)}
+                    <label>{t('auth_files.headers_label')}</label>
+                    <textarea
+                      className={`input ${editor.headersError ? styles.prefixProxyTextareaInvalid : ''}`}
+                      value={editor.headersText}
+                      placeholder={t('auth_files.headers_placeholder')}
+                      rows={4}
+                      aria-invalid={Boolean(editor.headersError)}
                       disabled={disableControls || editor.saving || !editor.json}
-                      ariaLabel={t('ai_providers.codex_websockets_label')}
-                      onChange={(value) => onChange('websockets', value)}
+                      onChange={(e) => onChange('headersText', e.target.value)}
                     />
-                    <div className="hint">{t('ai_providers.codex_websockets_hint')}</div>
+                    {editor.headersError && <div className="error-box">{editor.headersError}</div>}
+                    <div className="hint">{t('auth_files.headers_hint')}</div>
                   </div>
-                )}
-              </div>
+                  <Input
+                    label={t('auth_files.note_label')}
+                    value={editor.note}
+                    placeholder={t('auth_files.note_placeholder')}
+                    hint={t('auth_files.note_hint')}
+                    disabled={disableControls || editor.saving || !editor.json}
+                    onChange={(e) => onChange('note', e.target.value)}
+                  />
+                </div>
+              )}
             </>
           )}
         </div>

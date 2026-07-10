@@ -1,4 +1,7 @@
 export type PayloadParamValueType = 'string' | 'number' | 'boolean' | 'json';
+export type DisableImageGenerationMode = 'false' | 'true' | 'chat';
+export type PluginStoreAuthType = 'none' | 'bearer' | 'basic' | 'header' | 'github-token';
+export type PluginStoreAuthApplyTo = 'registry' | 'metadata' | 'artifact';
 export type PayloadParamValidationErrorCode =
   | 'payload_invalid_number'
   | 'payload_invalid_boolean'
@@ -6,27 +9,23 @@ export type PayloadParamValidationErrorCode =
 
 export type VisualConfigFieldPath =
   | 'port'
+  | 'errorLogsMaxFiles'
   | 'logsMaxTotalSizeMb'
+  | 'redisUsageQueueRetentionSeconds'
   | 'requestRetry'
+  | 'maxRetryCredentials'
   | 'maxRetryInterval'
-  | 'errorControl.default.retryRounds'
-  | 'errorControl.default.roundBackoffBase'
-  | 'errorControl.default.roundBackoffExponent'
-  | 'errorControl.default.roundBackoffMax'
-  | 'routingParallelRequestsMinRound'
-  | 'routingParallelRequestsMinFailures'
+  | 'authAutoRefreshWorkers'
   | 'streaming.keepaliveSeconds'
   | 'streaming.bootstrapRetries'
   | 'streaming.nonstreamKeepaliveInterval'
   | 'outputFilter.maxLength'
-  | `outputFilter.providers.${string}.maxLength`
-  | `errorControl.providers.${string}.${ErrorControlPolicyField}`;
+  | `outputFilter.providers.${string}.maxLength`;
 
 export type VisualConfigValidationErrorCode =
   | 'port_range'
   | 'non_negative_integer'
-  | 'positive_integer'
-  | 'positive_number';
+  | 'positive_integer';
 
 export type VisualConfigValidationErrors = Partial<
   Record<VisualConfigFieldPath, VisualConfigValidationErrorCode>
@@ -39,10 +38,22 @@ export type PayloadParamEntry = {
   value: string;
 };
 
+export type PayloadHeaderEntry = {
+  id: string;
+  name: string;
+  value: string;
+};
+
 export type PayloadModelEntry = {
   id: string;
   name: string;
   protocol?: string;
+  fromProtocol?: string;
+  headers?: PayloadHeaderEntry[];
+  match?: PayloadParamEntry[];
+  notMatch?: PayloadParamEntry[];
+  exist?: string[];
+  notExist?: string[];
 };
 
 export type PayloadRule = {
@@ -63,6 +74,19 @@ export interface StreamingConfig {
   nonstreamKeepaliveInterval: string;
 }
 
+export type PluginStoreAuthRule = {
+  id: string;
+  match: string;
+  applyTo: PluginStoreAuthApplyTo[];
+  type: PluginStoreAuthType;
+  tokenEnv: string;
+  usernameEnv: string;
+  passwordEnv: string;
+  headerName: string;
+  headerValueEnv: string;
+  allowInsecure: boolean;
+};
+
 export interface OutputFilterRuleValues {
   enabled: boolean;
   maxLength: string;
@@ -78,25 +102,6 @@ export interface OutputFilterValues extends OutputFilterRuleValues {
   providers: OutputFilterProviderRule[];
 }
 
-export type ErrorControlPolicyField =
-  | 'retryRounds'
-  | 'roundBackoffBase'
-  | 'roundBackoffExponent'
-  | 'roundBackoffMax';
-
-export type ErrorControlPolicyValues = Record<ErrorControlPolicyField, string>;
-
-export type ErrorControlProviderPolicy = {
-  id: string;
-  provider: string;
-  policy: ErrorControlPolicyValues;
-};
-
-export interface ErrorControlValues {
-  default: ErrorControlPolicyValues;
-  providers: ErrorControlProviderPolicy[];
-}
-
 export type VisualConfigValues = {
   host: string;
   port: string;
@@ -106,32 +111,50 @@ export type VisualConfigValues = {
   rmAllowRemote: boolean;
   rmSecretKey: string;
   rmDisableControlPanel: boolean;
+  rmDisableAutoUpdatePanel: boolean;
   rmPanelRepo: string;
   authDir: string;
   apiKeysText: string;
+  pluginsEnabled: boolean;
+  pluginStoreSources: string[];
+  pluginStoreAuth: PluginStoreAuthRule[];
   debug: boolean;
   commercialMode: boolean;
   loggingToFile: boolean;
   logsMaxTotalSizeMb: string;
+  errorLogsMaxFiles: string;
   usageStatisticsEnabled: boolean;
+  redisUsageQueueRetentionSeconds: string;
   proxyUrl: string;
   forceModelPrefix: boolean;
   codexRemoveEmptyInputName: boolean;
+  passthroughHeaders: boolean;
   requestRetry: string;
+  maxRetryCredentials: string;
   maxRetryInterval: string;
-  errorControl: ErrorControlValues;
-  defaultTestModelCodex: string;
-  defaultTestModelClaude: string;
+  disableCooling: boolean;
+  disableImageGeneration: DisableImageGenerationMode;
+  gptImage2BaseModel: string;
+  authAutoRefreshWorkers: string;
   quotaSwitchProject: boolean;
   quotaSwitchPreviewModel: boolean;
   quotaAntigravityCredits: boolean;
-  routingStrategy: 'random' | 'last-success';
-  routingParallelRequestsEnabled: boolean;
-  routingParallelRequestsMinRound: string;
-  routingParallelRequestsMinFailures: string;
+  routingStrategy: 'round-robin' | 'fill-first';
   routingSessionAffinity: boolean;
   routingSessionAffinityTTL: string;
   wsAuth: boolean;
+  antigravitySignatureCacheEnabled: boolean;
+  antigravitySignatureBypassStrict: boolean;
+  claudeHeaderUserAgent: string;
+  claudeHeaderPackageVersion: string;
+  claudeHeaderRuntimeVersion: string;
+  claudeHeaderOs: string;
+  claudeHeaderArch: string;
+  claudeHeaderTimeout: string;
+  claudeHeaderStabilizeDeviceProfile: boolean;
+  codexHeaderUserAgent: string;
+  codexHeaderBetaFeatures: string;
+  codexIdentityConfuse: boolean;
   payloadDefaultRules: PayloadRule[];
   payloadDefaultRawRules: PayloadRule[];
   payloadOverrideRules: PayloadRule[];
@@ -155,40 +178,50 @@ export const DEFAULT_VISUAL_VALUES: VisualConfigValues = {
   rmAllowRemote: false,
   rmSecretKey: '',
   rmDisableControlPanel: false,
+  rmDisableAutoUpdatePanel: false,
   rmPanelRepo: '',
   authDir: '',
   apiKeysText: '',
+  pluginsEnabled: false,
+  pluginStoreSources: [],
+  pluginStoreAuth: [],
   debug: false,
   commercialMode: false,
   loggingToFile: false,
   logsMaxTotalSizeMb: '',
+  errorLogsMaxFiles: '',
   usageStatisticsEnabled: false,
+  redisUsageQueueRetentionSeconds: '',
   proxyUrl: '',
   forceModelPrefix: false,
   codexRemoveEmptyInputName: false,
+  passthroughHeaders: false,
   requestRetry: '',
+  maxRetryCredentials: '',
   maxRetryInterval: '',
-  errorControl: {
-    default: {
-      retryRounds: '',
-      roundBackoffBase: '',
-      roundBackoffExponent: '',
-      roundBackoffMax: '',
-    },
-    providers: [],
-  },
-  defaultTestModelCodex: '',
-  defaultTestModelClaude: '',
+  disableCooling: false,
+  disableImageGeneration: 'false',
+  gptImage2BaseModel: '',
+  authAutoRefreshWorkers: '',
   quotaSwitchProject: true,
   quotaSwitchPreviewModel: true,
-  quotaAntigravityCredits: true,
-  routingStrategy: 'random',
-  routingParallelRequestsEnabled: false,
-  routingParallelRequestsMinRound: '',
-  routingParallelRequestsMinFailures: '',
+  quotaAntigravityCredits: false,
+  routingStrategy: 'round-robin',
   routingSessionAffinity: false,
   routingSessionAffinityTTL: '',
   wsAuth: false,
+  antigravitySignatureCacheEnabled: true,
+  antigravitySignatureBypassStrict: false,
+  claudeHeaderUserAgent: '',
+  claudeHeaderPackageVersion: '',
+  claudeHeaderRuntimeVersion: '',
+  claudeHeaderOs: '',
+  claudeHeaderArch: '',
+  claudeHeaderTimeout: '',
+  claudeHeaderStabilizeDeviceProfile: false,
+  codexHeaderUserAgent: '',
+  codexHeaderBetaFeatures: '',
+  codexIdentityConfuse: false,
   payloadDefaultRules: [],
   payloadDefaultRawRules: [],
   payloadOverrideRules: [],

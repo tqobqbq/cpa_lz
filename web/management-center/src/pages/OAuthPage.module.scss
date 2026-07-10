@@ -15,6 +15,15 @@
   height: 24px;
 }
 
+.cardTitleIconFallback {
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-secondary);
+}
+
 .pageTitle {
   font-size: 28px;
   font-weight: 700;
@@ -142,6 +151,13 @@
   align-items: center;
   gap: $spacing-sm;
   margin-top: $spacing-sm;
+}
+
+.successActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: $spacing-sm;
 }
 
 .geminiProjectField {
