@@ -80,3 +80,24 @@ auth-files-group,routing/rules}` 契约正常。
   官方端点。前端表单以"勾选=true(缺省)/取消=false"表达,不再写显式 true。
 - usage 明细 schema 中 retry_round、round_dispatch_index、parallel_eligible、
   provider_cooldown_* 已随后端功能移除;前端类型保留为可选字段以兼容旧数据文件。
+
+## 合并后回归修复(1983018b,2026-07-11)
+
+合并后发现 usage 请求明细表三处回归,根因均为 v7 合并删除了 fork 独有的后端数据
+链路(前端 UI 本身仍在):
+
+| 回归 | 根因 | 修复 |
+| --- | --- | --- |
+| source 列悬停/点击编辑失效,且明细泄露裸 API key | synthesizer 不再给 config 合成 auth 写 `display_source` 属性 | 恢复 `applyConfigDisplayAttrs`;`resolveUsageSource` 优先 display_source;编辑跳转改 `/ai-providers?edit=<type>:<index>` 深链(Workbench Sheet),旧 `/ai-providers/:type/:index` 路由重定向兼容 |
+| 上游真实模型列恒为 "-" | `Record.UpstreamModel` 与响应体提取链整体被删 | 恢复 `ExtractUpstreamModel` + `SetUpstreamModelFromPayload`(first-wins),接入全部执行器 usage 解析点、logger 与 redisqueue |
+| dispatch 列消失 | 调度元数据随 error-control 引擎移除 | 以 context 方式重建 `RequestMetadata`(request_count / retry_round / round_dispatch_index),conductor 三层打点;parallel_eligible 与 provider_cooldown_* 维持移除(上游优先决策) |
+
+注意:上一节"usage 明细 schema 中 retry_round、round_dispatch_index …已随后端
+功能移除"自本次修复起不再成立 —— 这三个字段(加 request_count、auth_index、
+upstream_model)已恢复下发;仅 parallel_eligible、provider_cooldown_* 仍为历史
+字段。重试**行为**不变,仍是上游 v7 语义(request-retry × max-retry-credentials
+× max-retry-interval + 时间型冷却),恢复的只是可观测性字段。
+
+验证:go build/vet/test 61 包全绿;tsc 0 错误;dist 与 embed 字节一致;端到端
+冒烟(假 SSE 上游)确认明细含 `source: codex#0`、`auth_index`、
+`upstream_model`、`request_count`,source_stats 键不再是裸 key。
