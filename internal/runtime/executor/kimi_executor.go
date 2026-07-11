@@ -172,6 +172,7 @@ func (e *KimiExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 		return resp, err
 	}
 	helps.AppendAPIResponseChunk(ctx, e.cfg, data)
+	reporter.SetUpstreamModelFromPayload(data)
 	reporter.Publish(ctx, helps.ParseOpenAIUsage(data))
 	var param any
 	// Note: TranslateNonStream uses req.Model (original with suffix) to preserve
@@ -300,6 +301,7 @@ func (e *KimiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 			if len(bytes.TrimSpace(line)) > 0 {
 				linesScanned++
 			}
+			reporter.SetUpstreamModelFromPayload(line)
 			if detail, ok := helps.ParseOpenAIStreamUsage(line); ok {
 				reporter.Publish(ctx, detail)
 			}

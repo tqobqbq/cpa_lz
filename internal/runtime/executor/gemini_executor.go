@@ -203,6 +203,7 @@ func (e *GeminiExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 		return resp, err
 	}
 	helps.AppendAPIResponseChunk(ctx, e.cfg, data)
+	reporter.SetUpstreamModelFromPayload(data)
 	reporter.Publish(ctx, helps.ParseGeminiUsage(data))
 	var param any
 	out := sdktranslator.TranslateNonStream(ctx, to, responseFormat, req.Model, opts.OriginalRequest, body, data, &param)
@@ -327,6 +328,7 @@ func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 				continue
 			}
 			payloadCount++
+			reporter.SetUpstreamModelFromPayload(payload)
 			if detail, ok := helps.ParseGeminiStreamUsage(payload); ok {
 				reporter.Publish(ctx, detail)
 			}

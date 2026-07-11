@@ -420,6 +420,7 @@ func (e *GeminiVertexExecutor) executeWithServiceAccount(ctx context.Context, au
 		return resp, errRead
 	}
 	helps.AppendAPIResponseChunk(ctx, e.cfg, data)
+	reporter.SetUpstreamModelFromPayload(data)
 	reporter.Publish(ctx, helps.ParseGeminiUsage(data))
 
 	// For Imagen models, convert response to Gemini format before translation
@@ -549,6 +550,7 @@ func (e *GeminiVertexExecutor) executeWithAPIKey(ctx context.Context, auth *clip
 		return resp, errRead
 	}
 	helps.AppendAPIResponseChunk(ctx, e.cfg, data)
+	reporter.SetUpstreamModelFromPayload(data)
 	reporter.Publish(ctx, helps.ParseGeminiUsage(data))
 	var param any
 	out := sdktranslator.TranslateNonStream(ctx, to, responseFormat, req.Model, opts.OriginalRequest, body, data, &param)
@@ -677,6 +679,7 @@ func (e *GeminiVertexExecutor) executeStreamWithServiceAccount(ctx context.Conte
 			if len(bytes.TrimSpace(line)) > 0 {
 				payloadCount++
 			}
+			reporter.SetUpstreamModelFromPayload(line)
 			if detail, ok := helps.ParseGeminiStreamUsage(line); ok {
 				reporter.Publish(ctx, detail)
 			}
@@ -835,6 +838,7 @@ func (e *GeminiVertexExecutor) executeStreamWithAPIKey(ctx context.Context, auth
 			if len(bytes.TrimSpace(line)) > 0 {
 				payloadCount++
 			}
+			reporter.SetUpstreamModelFromPayload(line)
 			if detail, ok := helps.ParseGeminiStreamUsage(line); ok {
 				reporter.Publish(ctx, detail)
 			}

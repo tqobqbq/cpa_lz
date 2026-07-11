@@ -1,5 +1,6 @@
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useSearchParams } from 'react-router-dom';
 import { usePageTransitionLayer } from '@/components/common/PageTransitionLayer';
 import { useHeaderRefresh } from '@/hooks/useHeaderRefresh';
 import { Skeleton } from '@/components/ui/Skeleton';
@@ -27,7 +28,13 @@ import {
   type ProviderFilterState,
   type ProvidersWorkbenchUiState,
 } from './uiState';
-import type { ProviderBrand, ProviderResource, ProviderSortBy, SortDir } from './types';
+import type {
+  ProviderBrand,
+  ProviderGroup,
+  ProviderResource,
+  ProviderSortBy,
+  SortDir,
+} from './types';
 import styles from './ProvidersWorkbenchPage.module.scss';
 
 type SheetMode = 'detail' | 'create' | 'edit';
@@ -95,6 +102,32 @@ const getResourceRecentSuccess = (
     resource.baseUrl ?? undefined
   ).success;
 };
+
+// Usage-page deep links identify credentials as "<type>:<index>" using the raw
+// config-array position; map that onto workbench brands (claude entries may live
+// in either the claude or claudeApi group).
+const DEEP_LINK_TYPE_TO_BRANDS: Record<string, ProviderBrand[]> = {
+  gemini: ['gemini'],
+  claude: ['claude', 'claudeApi'],
+  codex: ['codex'],
+  vertex: ['vertex'],
+  openai: ['openaiCompatibility'],
+};
+
+function findResourceByDeepLink(
+  groups: ProviderGroup[],
+  type: string,
+  index: number
+): ProviderResource | null {
+  const brands = DEEP_LINK_TYPE_TO_BRANDS[type.trim().toLowerCase()];
+  if (!brands || !Number.isInteger(index) || index < 0) return null;
+  for (const brand of brands) {
+    const group = groups.find((entry) => entry.id === brand);
+    const resource = group?.resources.find((entry) => entry.originalIndex === index);
+    if (resource) return resource;
+  }
+  return null;
+}
 
 export function ProvidersWorkbenchPage({ fixedBrand }: ProvidersWorkbenchPageProps = {}) {
   const { t, i18n } = useTranslation();
@@ -319,6 +352,26 @@ export function ProvidersWorkbenchPage({ fixedBrand }: ProvidersWorkbenchPagePro
   const closeSheet = useCallback(() => {
     setSheetState((s) => ({ ...s, open: false }));
   }, []);
+
+  const [searchParams, setSearchParams] = useSearchParams();
+  const deepLinkHandledRef = useRef<string | null>(null);
+  const deepLinkEdit = fixedBrand ? null : searchParams.get('edit');
+  useEffect(() => {
+    if (!deepLinkEdit || !workbench.snapshot) return;
+    if (deepLinkHandledRef.current === deepLinkEdit) return;
+    deepLinkHandledRef.current = deepLinkEdit;
+    const separator = deepLinkEdit.lastIndexOf(':');
+    if (separator > 0) {
+      const type = deepLinkEdit.slice(0, separator);
+      const index = Number(deepLinkEdit.slice(separator + 1));
+      const resource = findResourceByDeepLink(workbench.snapshot.groups, type, index);
+      if (resource) {
+        setActiveBrand(resource.brand);
+        openEdit(resource);
+      }
+    }
+    setSearchParams({}, { replace: true });
+  }, [deepLinkEdit, openEdit, setActiveBrand, setSearchParams, workbench.snapshot]);
 
   const handleDelete = useCallback(
     (resource: ProviderResource) => {

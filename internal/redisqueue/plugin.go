@@ -89,6 +89,7 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 		TTFTMs:          record.TTFT.Milliseconds(),
 		Source:          record.Source,
 		AuthIndex:       record.AuthIndex,
+		UpstreamModel:   strings.TrimSpace(record.UpstreamModel),
 		Tokens:          tokens,
 		Failed:          failed,
 		Fail:            fail,
@@ -134,6 +135,7 @@ type requestDetail struct {
 	TTFTMs          int64       `json:"ttft_ms"`
 	Source          string      `json:"source"`
 	AuthIndex       string      `json:"auth_index"`
+	UpstreamModel   string      `json:"upstream_model,omitempty"`
 	Tokens          tokenStats  `json:"tokens"`
 	Failed          bool        `json:"failed"`
 	Fail            failDetail  `json:"fail"`

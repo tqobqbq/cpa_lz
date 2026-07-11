@@ -643,6 +643,7 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 					xaiCollectOutputItemDone(payload, outputItemsByIndex, &outputItemsFallback)
 				case "response.completed":
 					logXAIWebsocketTerminalResponse(executionSessionID, authID, wsURL, eventType, payload)
+					reporter.SetUpstreamModelFromPayload(payload)
 					if detail, ok := helps.ParseCodexUsage(payload); ok {
 						reporter.Publish(ctx, detail)
 					}
@@ -655,6 +656,7 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 					}
 				case "response.done":
 					logXAIWebsocketTerminalResponse(executionSessionID, authID, wsURL, eventType, payload)
+					reporter.SetUpstreamModelFromPayload(payload)
 					if detail, ok := helps.ParseCodexUsage(payload); ok {
 						reporter.Publish(ctx, detail)
 					}

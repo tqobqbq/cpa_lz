@@ -2275,11 +2275,12 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 		return cliproxyexecutor.Response{}, &Error{Code: "provider_not_found", Message: "no provider supplied"}
 	}
 
+	ctx = coreusage.EnsureRequestContext(ctx)
 	_, maxRetryCredentials, maxWait := m.retrySettings()
 
 	var lastErr error
 	for attempt := 0; ; attempt++ {
-		resp, errExec := m.executeMixedOnce(ctx, normalized, req, opts, maxRetryCredentials)
+		resp, errExec := m.executeMixedOnce(contextWithUsageRetryRound(ctx, attempt), normalized, req, opts, maxRetryCredentials)
 		if errExec == nil {
 			return resp, nil
 		}
@@ -2312,11 +2313,12 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 		return cliproxyexecutor.Response{}, &Error{Code: "provider_not_found", Message: "no provider supplied"}
 	}
 
+	ctx = coreusage.EnsureRequestContext(ctx)
 	_, maxRetryCredentials, maxWait := m.retrySettings()
 
 	var lastErr error
 	for attempt := 0; ; attempt++ {
-		resp, errExec := m.executeCountMixedOnce(ctx, normalized, req, opts, maxRetryCredentials)
+		resp, errExec := m.executeCountMixedOnce(contextWithUsageRetryRound(ctx, attempt), normalized, req, opts, maxRetryCredentials)
 		if errExec == nil {
 			return resp, nil
 		}
@@ -2343,11 +2345,12 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 		return nil, &Error{Code: "provider_not_found", Message: "no provider supplied"}
 	}
 
+	ctx = coreusage.EnsureRequestContext(ctx)
 	_, maxRetryCredentials, maxWait := m.retrySettings()
 
 	var lastErr error
 	for attempt := 0; ; attempt++ {
-		result, errStream := m.executeStreamMixedOnce(ctx, normalized, req, opts, maxRetryCredentials)
+		result, errStream := m.executeStreamMixedOnce(contextWithUsageRetryRound(ctx, attempt), normalized, req, opts, maxRetryCredentials)
 		if errStream == nil {
 			return result, nil
 		}
@@ -2514,6 +2517,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 		if len(models) == 0 {
 			continue
 		}
+		execCtx = contextWithUsageDispatchIndex(execCtx, len(attempted))
 		attempted[auth.ID] = struct{}{}
 		var errPrepare error
 		auth, errPrepare = m.prepareRequestAuth(execCtx, executor, auth)
@@ -2616,6 +2620,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 		if len(models) == 0 {
 			continue
 		}
+		execCtx = contextWithUsageDispatchIndex(execCtx, len(attempted))
 		attempted[auth.ID] = struct{}{}
 		var errPrepare error
 		auth, errPrepare = m.prepareRequestAuth(execCtx, executor, auth)
@@ -2716,6 +2721,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 		if len(models) == 0 {
 			continue
 		}
+		execCtx = contextWithUsageDispatchIndex(execCtx, len(attempted))
 		attempted[auth.ID] = struct{}{}
 		var errPrepare error
 		auth, errPrepare = m.prepareRequestAuth(execCtx, executor, auth)
@@ -2886,6 +2892,20 @@ func (m *Manager) prepareRequestAuth(ctx context.Context, executor ProviderExecu
 		return saved, nil
 	}
 	return updated, nil
+}
+
+// contextWithUsageRetryRound stamps the outer retry pass number onto ctx for usage sinks.
+func contextWithUsageRetryRound(ctx context.Context, attempt int) context.Context {
+	metadata := coreusage.MetadataFromContext(ctx)
+	metadata.RetryRound = attempt
+	return coreusage.WithRequestMetadata(ctx, metadata)
+}
+
+// contextWithUsageDispatchIndex stamps the zero-based credential position within the pass.
+func contextWithUsageDispatchIndex(ctx context.Context, index int) context.Context {
+	metadata := coreusage.MetadataFromContext(ctx)
+	metadata.RoundDispatchIndex = index
+	return coreusage.WithRequestMetadata(ctx, metadata)
 }
 
 func contextWithRequestedModelAlias(ctx context.Context, opts cliproxyexecutor.Options, fallback string) context.Context {

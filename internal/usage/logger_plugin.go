@@ -120,17 +120,21 @@ type modelStats struct {
 
 // RequestDetail stores the timestamp, latency, and token usage for a single request.
 type RequestDetail struct {
-	Timestamp     time.Time  `json:"timestamp"`
-	LatencyMs     int64      `json:"latency_ms"`
-	Source        string     `json:"source"`
-	UpstreamModel string     `json:"upstream_model,omitempty"`
-	UserAgent     string     `json:"user_agent,omitempty"`
-	InputChars    int64      `json:"input_chars,omitempty"`
-	StatusCode    int        `json:"status_code,omitempty"`
-	ErrorReason   string     `json:"error_reason,omitempty"`
-	ErrorMessage  string     `json:"error_message,omitempty"`
-	Tokens        TokenStats `json:"tokens"`
-	Failed        bool       `json:"failed"`
+	Timestamp          time.Time  `json:"timestamp"`
+	LatencyMs          int64      `json:"latency_ms"`
+	Source             string     `json:"source"`
+	AuthIndex          string     `json:"auth_index,omitempty"`
+	UpstreamModel      string     `json:"upstream_model,omitempty"`
+	UserAgent          string     `json:"user_agent,omitempty"`
+	InputChars         int64      `json:"input_chars,omitempty"`
+	StatusCode         int        `json:"status_code,omitempty"`
+	ErrorReason        string     `json:"error_reason,omitempty"`
+	ErrorMessage       string     `json:"error_message,omitempty"`
+	RequestCount       uint64     `json:"request_count,omitempty"`
+	RetryRound         int        `json:"retry_round,omitempty"`
+	RoundDispatchIndex int        `json:"round_dispatch_index,omitempty"`
+	Tokens             TokenStats `json:"tokens"`
+	Failed             bool       `json:"failed"`
 }
 
 // TokenStats captures the token usage breakdown for a request.
@@ -254,9 +258,13 @@ func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record)
 		requestedModel = record.Model
 	}
 	modelName := normaliseUsageDimension(requestedModel, "unknown")
-	upstreamModel := strings.TrimSpace(record.Model)
-	if upstreamModel == requestedModel {
-		upstreamModel = ""
+	upstreamModel := strings.TrimSpace(record.UpstreamModel)
+	if upstreamModel == "" {
+		// Fall back to the routed model, but only when it observably differs
+		// from what the client asked for (alias resolution).
+		if routed := strings.TrimSpace(record.Model); routed != requestedModel {
+			upstreamModel = routed
+		}
 	}
 	statusCode := 0
 	errorReason := ""
@@ -291,18 +299,23 @@ func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record)
 	} else if stats.Models == nil {
 		stats.Models = make(map[string]*modelStats)
 	}
+	requestMetadata := coreusage.MetadataFromContext(ctx)
 	s.updateAPIStats(stats, modelName, RequestDetail{
-		Timestamp:     timestamp,
-		LatencyMs:     normaliseLatency(record.Latency),
-		Source:        record.Source,
-		UpstreamModel: upstreamModel,
-		UserAgent:     resolveUserAgent(ctx),
-		InputChars:    normaliseInputChars(resolveInputChars(ctx)),
-		StatusCode:    statusCode,
-		ErrorReason:   errorReason,
-		ErrorMessage:  errorMessage,
-		Tokens:        detail,
-		Failed:        failed,
+		Timestamp:          timestamp,
+		LatencyMs:          normaliseLatency(record.Latency),
+		Source:             record.Source,
+		AuthIndex:          capUsageStoredString(record.AuthIndex),
+		UpstreamModel:      upstreamModel,
+		UserAgent:          resolveUserAgent(ctx),
+		InputChars:         normaliseInputChars(resolveInputChars(ctx)),
+		StatusCode:         statusCode,
+		ErrorReason:        errorReason,
+		ErrorMessage:       errorMessage,
+		RequestCount:       requestMetadata.RequestCount,
+		RetryRound:         requestMetadata.RetryRound,
+		RoundDispatchIndex: requestMetadata.RoundDispatchIndex,
+		Tokens:             detail,
+		Failed:             failed,
 	}, timestamp)
 	if userAgent := capUsageStoredString(resolveUserAgent(ctx)); userAgent != "" {
 		addBoundedUsageSetValue(s.userAgents, userAgent, maxUsageUserAgents)
@@ -475,6 +488,7 @@ func (s *RequestStatistics) mergeOneUsageModelIntoOverflow(stats *apiStats) bool
 
 func normaliseRequestDetail(detail RequestDetail) RequestDetail {
 	detail.Source = capUsageStoredString(detail.Source)
+	detail.AuthIndex = capUsageStoredString(detail.AuthIndex)
 	detail.UpstreamModel = capUsageStoredString(detail.UpstreamModel)
 	detail.UserAgent = capUsageStoredString(detail.UserAgent)
 	detail.ErrorReason = capUsageStoredString(detail.ErrorReason)

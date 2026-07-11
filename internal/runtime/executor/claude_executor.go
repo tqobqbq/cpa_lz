@@ -367,11 +367,13 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 				reporter.PublishFailure(ctx, errValidate)
 				return resp, errValidate
 			}
+			reporter.SetUpstreamModelFromPayload(line)
 			if detail, ok := helps.ParseClaudeStreamUsage(line); ok {
 				reporter.Publish(ctx, detail)
 			}
 		}
 	} else {
+		reporter.SetUpstreamModelFromPayload(data)
 		reporter.Publish(ctx, helps.ParseClaudeUsage(data))
 	}
 	data = restoreClaudeOAuthToolNamesFromResponse(data, claudeToolPrefix, auth.ToolPrefixDisabled(), oauthToolNamesReverseMap)
@@ -585,6 +587,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 					}
 					return
 				}
+				reporter.SetUpstreamModelFromPayload(line)
 				if detail, ok := helps.ParseClaudeStreamUsage(line); ok {
 					reporter.Publish(ctx, detail)
 				}
@@ -667,6 +670,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 				}
 				return
 			}
+			reporter.SetUpstreamModelFromPayload(line)
 			if detail, ok := helps.ParseClaudeStreamUsage(line); ok {
 				reporter.Publish(ctx, detail)
 			}

@@ -818,6 +818,7 @@ attemptLoop:
 			}
 			cacheAntigravityReasoningReplayFromResponse(ctx, replayScope, requestPayload, bodyBytes)
 			bodyBytes = e.resolveWebSearchGroundingURLs(ctx, auth, from, originalPayload, translated, bodyBytes)
+			reporter.SetUpstreamModelFromPayload(bodyBytes)
 			reporter.Publish(ctx, helps.ParseAntigravityUsage(bodyBytes))
 			var param any
 			converted := sdktranslator.TranslateNonStream(ctx, to, responseFormat, req.Model, opts.OriginalRequest, translated, bodyBytes, &param)
@@ -1067,6 +1068,7 @@ attemptLoop:
 					}
 					payloadCount++
 
+					reporter.SetUpstreamModelFromPayload(payload)
 					if detail, ok := helps.ParseAntigravityStreamUsage(payload); ok {
 						reporter.Publish(ctx, detail)
 					}
@@ -1100,6 +1102,7 @@ attemptLoop:
 			resp = cliproxyexecutor.Response{Payload: e.convertStreamToNonStream(buffer.Bytes())}
 
 			resp.Payload = e.resolveWebSearchGroundingURLs(ctx, auth, from, originalPayload, translated, resp.Payload)
+			reporter.SetUpstreamModelFromPayload(resp.Payload)
 			reporter.Publish(ctx, helps.ParseAntigravityUsage(resp.Payload))
 			var param any
 			converted := sdktranslator.TranslateNonStream(ctx, to, responseFormat, req.Model, opts.OriginalRequest, translated, resp.Payload, &param)
@@ -1569,6 +1572,7 @@ attemptLoop:
 					}
 					payloadCount++
 
+					reporter.SetUpstreamModelFromPayload(payload)
 					if detail, ok := helps.ParseAntigravityStreamUsage(payload); ok {
 						reporter.Publish(ctx, detail)
 					}

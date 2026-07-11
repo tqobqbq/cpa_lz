@@ -154,6 +154,7 @@ func (e *CodexExecutor) executeOpenAIImage(ctx context.Context, auth *cliproxyau
 		case "response.output_item.done":
 			collectCodexOutputItemDone(eventData, outputItemsByIndex, &outputItemsFallback)
 		case "response.completed":
+			reporter.SetUpstreamModelFromPayload(eventData)
 			if detail, ok := helps.ParseCodexUsage(eventData); ok {
 				reporter.Publish(ctx, detail)
 			}
@@ -282,6 +283,7 @@ func (e *CodexExecutor) executeOpenAIImageStream(ctx context.Context, auth *clip
 					return
 				}
 			case "response.completed":
+				reporter.SetUpstreamModelFromPayload(eventData)
 				if detail, ok := helps.ParseCodexUsage(eventData); ok {
 					reporter.Publish(ctx, detail)
 				}
@@ -368,6 +370,7 @@ func (e *CodexExecutor) executeDirectOpenAIImage(ctx context.Context, auth *clip
 		return resp, err
 	}
 
+	reporter.SetUpstreamModelFromPayload(data)
 	reporter.Publish(ctx, helps.ParseOpenAIUsage(data))
 	reporter.EnsurePublished(ctx)
 	return cliproxyexecutor.Response{Payload: data, Headers: httpResp.Header.Clone()}, nil
@@ -443,6 +446,7 @@ func (e *CodexExecutor) executeDirectOpenAIImageStream(ctx context.Context, auth
 				chunk = applyCodexIdentityConfuseResponsePayload(chunk, identityState)
 				helps.AppendAPIResponseChunk(ctx, e.cfg, chunk)
 				for _, line := range bytes.Split(chunk, []byte("\n")) {
+					reporter.SetUpstreamModelFromPayload(bytes.TrimSpace(line))
 					if detail, ok := helps.ParseOpenAIStreamUsage(bytes.TrimSpace(line)); ok {
 						reporter.Publish(ctx, detail)
 					}

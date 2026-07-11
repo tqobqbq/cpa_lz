@@ -1,4 +1,4 @@
-import { Navigate, useRoutes, type Location } from 'react-router-dom';
+import { Navigate, useParams, useRoutes, type Location } from 'react-router-dom';
 import { DashboardPage } from '@/pages/DashboardPage';
 import { ProvidersWorkbenchPage } from '@/features/providers/ProvidersWorkbenchPage';
 import { UsagePage } from '@/pages/UsagePage';
@@ -15,6 +15,15 @@ import { LogsPage } from '@/pages/LogsPage';
 import { SystemPage } from '@/pages/SystemPage';
 import { useAuthStore } from '@/stores';
 
+// Legacy usage-page edit links pointed at /ai-providers/<type>/<index>; forward
+// them to the query-param deep link handled by ProvidersWorkbenchPage.
+function LegacyProviderEditRedirect() {
+  const { type, index } = useParams();
+  return (
+    <Navigate to={{ pathname: '/ai-providers', search: `?edit=${type}:${index}` }} replace />
+  );
+}
+
 const createMainRoutes = (supportsPlugin: boolean) => [
   { path: '/', element: <DashboardPage /> },
   { path: '/dashboard', element: <DashboardPage /> },
@@ -23,6 +32,7 @@ const createMainRoutes = (supportsPlugin: boolean) => [
   { path: '/quick-start', element: <ProvidersWorkbenchPage fixedBrand="apikeyFun" /> },
   { path: '/quick-start/*', element: <Navigate to="/quick-start" replace /> },
   { path: '/ai-providers', element: <ProvidersWorkbenchPage /> },
+  { path: '/ai-providers/:type/:index', element: <LegacyProviderEditRedirect /> },
   { path: '/ai-providers/*', element: <Navigate to="/ai-providers" replace /> },
   { path: '/usage', element: <UsagePage /> },
   { path: '/auth-files', element: <AuthFilesPage /> },

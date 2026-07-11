@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -20,11 +21,14 @@ type Record struct {
 	ExecutorType string
 	Model        string
 	Alias        string
-	APIKey       string
-	AuthID       string
-	AuthIndex    string
-	AuthType     string
-	Source       string
+	// UpstreamModel stores the model name reported by the upstream response
+	// payload, which may differ from the routed Model (e.g. -latest resolution).
+	UpstreamModel string
+	APIKey        string
+	AuthID        string
+	AuthIndex     string
+	AuthType      string
+	Source        string
 	// ReasoningEffort stores the translated upstream thinking level for request event logs.
 	ReasoningEffort string
 	// ServiceTier stores the client-requested service tier for request event logs.
@@ -329,3 +333,47 @@ func StartDefault(ctx context.Context) { DefaultManager().Start(ctx) }
 
 // StopDefault stops the default manager's dispatcher.
 func StopDefault() { DefaultManager().Stop() }
+
+// RequestMetadata carries per-downstream-request scheduling details into usage records.
+type RequestMetadata struct {
+	// RequestCount is a process-local sequence number for downstream requests.
+	RequestCount uint64
+	// RetryRound is the zero-based outer retry pass the attempt ran in.
+	RetryRound int
+	// RoundDispatchIndex is the zero-based credential position within the pass.
+	RoundDispatchIndex int
+}
+
+type requestMetadataContextKey struct{}
+
+// WithRequestMetadata attaches scheduling metadata for usage sinks.
+func WithRequestMetadata(ctx context.Context, metadata RequestMetadata) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, requestMetadataContextKey{}, metadata)
+}
+
+// MetadataFromContext returns scheduling metadata previously stored on ctx.
+func MetadataFromContext(ctx context.Context) RequestMetadata {
+	if ctx == nil {
+		return RequestMetadata{}
+	}
+	if metadata, ok := ctx.Value(requestMetadataContextKey{}).(RequestMetadata); ok {
+		return metadata
+	}
+	return RequestMetadata{}
+}
+
+var requestCounter atomic.Uint64
+
+// EnsureRequestContext attaches a process-local downstream request count when missing.
+func EnsureRequestContext(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if MetadataFromContext(ctx).RequestCount > 0 {
+		return ctx
+	}
+	return WithRequestMetadata(ctx, RequestMetadata{RequestCount: requestCounter.Add(1)})
+}

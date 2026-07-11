@@ -22,23 +22,25 @@ import (
 )
 
 type UsageReporter struct {
-	provider     string
-	executorType string
-	model        string
-	alias        string
-	authID       string
-	authIndex    string
-	authType     string
-	apiKey       string
-	source       string
-	reasoning    string
-	serviceTier  string
-	requestedAt  time.Time
-	ttftMu       sync.RWMutex
-	ttft         time.Duration
-	ttftStart    time.Time
-	ttftSet      bool
-	once         sync.Once
+	provider      string
+	executorType  string
+	model         string
+	alias         string
+	authID        string
+	authIndex     string
+	authType      string
+	apiKey        string
+	source        string
+	reasoning     string
+	serviceTier   string
+	requestedAt   time.Time
+	upstreamMu    sync.RWMutex
+	upstreamModel string
+	ttftMu        sync.RWMutex
+	ttft          time.Duration
+	ttftStart     time.Time
+	ttftSet       bool
+	once          sync.Once
 }
 
 type usageExecutor interface {
@@ -108,6 +110,42 @@ func (r *UsageReporter) SetTranslatedReasoningEffort(payload []byte, format stri
 	}
 	r.reasoning = thinking.ExtractTranslatedReasoningEffort(payload, format)
 	r.serviceTier = extractServiceTierFromPayload(payload)
+}
+
+// SetUpstreamModel records the model name reported by the upstream response.
+func (r *UsageReporter) SetUpstreamModel(model string) {
+	if r == nil {
+		return
+	}
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return
+	}
+	r.upstreamMu.Lock()
+	r.upstreamModel = model
+	r.upstreamMu.Unlock()
+}
+
+// SetUpstreamModelFromPayload extracts and records the upstream model name
+// from a response payload (JSON body or SSE data line).
+func (r *UsageReporter) SetUpstreamModelFromPayload(data []byte) {
+	if r == nil {
+		return
+	}
+	if r.currentUpstreamModel() != "" {
+		return
+	}
+	r.SetUpstreamModel(ExtractUpstreamModel(data))
+}
+
+func (r *UsageReporter) currentUpstreamModel() string {
+	if r == nil {
+		return ""
+	}
+	r.upstreamMu.RLock()
+	upstreamModel := r.upstreamModel
+	r.upstreamMu.RUnlock()
+	return upstreamModel
 }
 
 func (r *UsageReporter) TrackHTTPClient(client *http.Client) *http.Client {
@@ -264,6 +302,7 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 		ExecutorType:    r.executorType,
 		Model:           model,
 		Alias:           r.alias,
+		UpstreamModel:   r.currentUpstreamModel(),
 		Source:          r.source,
 		APIKey:          r.apiKey,
 		AuthID:          r.authID,
@@ -403,6 +442,16 @@ func APIKeyFromContext(ctx context.Context) string {
 
 func resolveUsageSource(auth *cliproxyauth.Auth, ctxAPIKey string) string {
 	if auth != nil {
+		if auth.Attributes != nil {
+			// Config-synthesized credentials expose a stable, secret-free label
+			// ("<provider>#<index>"); prefer it so raw API keys never reach
+			// usage sinks or the management UI.
+			if display := strings.TrimSpace(auth.Attributes["display_source"]); display != "" {
+				if source := strings.TrimSpace(auth.Attributes["source"]); strings.HasPrefix(strings.ToLower(source), "config:") {
+					return display
+				}
+			}
+		}
 		provider := strings.TrimSpace(auth.Provider)
 		if strings.EqualFold(provider, "vertex") {
 			if auth.Metadata != nil {
@@ -803,6 +852,36 @@ func isStopChunkWithoutUsage(jsonBytes []byte) bool {
 
 func JSONPayload(line []byte) []byte {
 	return jsonPayload(line)
+}
+
+var upstreamModelJSONPaths = [...]string{
+	"response.model",
+	"response.modelVersion",
+	"response.model_version",
+	"message.model",
+	"model",
+	"modelVersion",
+	"model_version",
+}
+
+// ExtractUpstreamModel returns the model name reported inside a response
+// payload (JSON body or SSE data line), or "" when absent.
+func ExtractUpstreamModel(data []byte) string {
+	payload := jsonPayload(data)
+	if len(payload) == 0 {
+		payload = bytes.TrimSpace(data)
+	}
+	if len(payload) == 0 || !gjson.ValidBytes(payload) {
+		return ""
+	}
+	root := gjson.ParseBytes(payload)
+	for _, path := range upstreamModelJSONPaths {
+		value := strings.TrimSpace(root.Get(path).String())
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func jsonPayload(line []byte) []byte {

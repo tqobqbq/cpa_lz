@@ -41,6 +41,21 @@ func (s *ConfigSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth,
 }
 
 // synthesizeGeminiKeys creates Auth entries for Gemini API keys.
+// applyConfigDisplayAttrs records a stable, secret-free label ("<provider>#<index>")
+// for config-synthesized credentials so usage sinks can show it instead of the raw key.
+func applyConfigDisplayAttrs(attrs map[string]string, provider string, index int) {
+	if attrs == nil {
+		return
+	}
+	provider = strings.TrimSpace(strings.ToLower(provider))
+	if provider == "" {
+		provider = "provider"
+	}
+	attrs["config_provider"] = provider
+	attrs["config_index"] = strconv.Itoa(index)
+	attrs["display_source"] = fmt.Sprintf("%s#%d", provider, index)
+}
+
 func (s *ConfigSynthesizer) synthesizeGeminiKeys(ctx *SynthesisContext) []*coreauth.Auth {
 	cfg := ctx.Config
 	now := ctx.Now
@@ -61,6 +76,7 @@ func (s *ConfigSynthesizer) synthesizeGeminiKeys(ctx *SynthesisContext) []*corea
 			"source":  fmt.Sprintf("config:gemini[%s]", token),
 			"api_key": key,
 		}
+		applyConfigDisplayAttrs(attrs, "gemini", i)
 		metadata := map[string]any{}
 		if entry.DisableCooling {
 			metadata["disable_cooling"] = true
@@ -116,6 +132,7 @@ func (s *ConfigSynthesizer) synthesizeClaudeKeys(ctx *SynthesisContext) []*corea
 			"source":  fmt.Sprintf("config:claude[%s]", token),
 			"api_key": key,
 		}
+		applyConfigDisplayAttrs(attrs, "claude", i)
 		metadata := map[string]any{}
 		if ck.DisableCooling {
 			metadata["disable_cooling"] = true
@@ -177,6 +194,7 @@ func (s *ConfigSynthesizer) synthesizeCodexKeys(ctx *SynthesisContext) []*coreau
 			"source":  fmt.Sprintf("config:codex[%s]", token),
 			"api_key": key,
 		}
+		applyConfigDisplayAttrs(attrs, "codex", i)
 		metadata := map[string]any{}
 		if ck.DisableCooling {
 			metadata["disable_cooling"] = true
@@ -256,6 +274,7 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 				"compat_name":  compat.Name,
 				"provider_key": internalProviderKey,
 			}
+			applyConfigDisplayAttrs(attrs, providerName, i)
 			metadata := map[string]any{}
 			if disableCooling {
 				metadata["disable_cooling"] = true
@@ -298,6 +317,7 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 				"compat_name":  compat.Name,
 				"provider_key": internalProviderKey,
 			}
+			applyConfigDisplayAttrs(attrs, providerName, i)
 			metadata := map[string]any{}
 			if disableCooling {
 				metadata["disable_cooling"] = true
@@ -351,6 +371,7 @@ func (s *ConfigSynthesizer) synthesizeVertexCompat(ctx *SynthesisContext) []*cor
 			"base_url":     base,
 			"provider_key": providerName,
 		}
+		applyConfigDisplayAttrs(attrs, providerName, i)
 		if compat.Priority != 0 {
 			attrs["priority"] = strconv.Itoa(compat.Priority)
 		}

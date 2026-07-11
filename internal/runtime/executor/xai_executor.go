@@ -177,6 +177,7 @@ func (e *XAIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req 
 		case "response.output_item.done":
 			xaiCollectOutputItemDone(eventData, outputItemsByIndex, &outputItemsFallback)
 		case "response.completed":
+			reporter.SetUpstreamModelFromPayload(eventData)
 			if detail, ok := helps.ParseCodexUsage(eventData); ok {
 				reporter.Publish(ctx, detail)
 			}
@@ -256,6 +257,7 @@ func (e *XAIExecutor) executeCompactRequest(ctx context.Context, auth *cliproxya
 		return nil, nil, nil, err
 	}
 
+	reporter.SetUpstreamModelFromPayload(data)
 	reporter.Publish(ctx, helps.ParseOpenAIUsage(data))
 	reporter.EnsurePublished(ctx)
 	return prepared, data, httpResp.Header.Clone(), nil
@@ -661,6 +663,7 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 					case "response.output_item.done":
 						xaiCollectOutputItemDone(eventData, outputItemsByIndex, &outputItemsFallback)
 					case "response.completed":
+						reporter.SetUpstreamModelFromPayload(eventData)
 						if detail, ok := helps.ParseCodexUsage(eventData); ok {
 							reporter.Publish(ctx, detail)
 						}

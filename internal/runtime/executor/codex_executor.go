@@ -890,6 +890,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 			continue
 		}
 
+		reporter.SetUpstreamModelFromPayload(eventData)
 		if detail, ok := helps.ParseCodexUsage(eventData); ok {
 			reporter.Publish(ctx, detail)
 		}
@@ -1030,6 +1031,7 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 	}
 	upstreamData := applyCodexIdentityConfuseResponsePayload(data, identityState)
 	helps.AppendAPIResponseChunk(ctx, e.cfg, upstreamData)
+	reporter.SetUpstreamModelFromPayload(upstreamData)
 	reporter.Publish(ctx, helps.ParseOpenAIUsage(upstreamData))
 	reporter.EnsurePublished(ctx)
 	var param any
@@ -1234,6 +1236,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 					collectCodexOutputItemDone(data, outputItemsByIndex, &outputItemsFallback)
 				case "response.completed":
 					sawCompleted = true
+					reporter.SetUpstreamModelFromPayload(data)
 					if detail, ok := helps.ParseCodexUsage(data); ok {
 						reporter.Publish(ctx, detail)
 					}
@@ -1861,6 +1864,7 @@ func normalizeCodexParallelToolCallsForTools(body []byte) []byte {
 }
 
 func publishCodexImageToolUsage(ctx context.Context, reporter *helps.UsageReporter, body []byte, completedData []byte) {
+	reporter.SetUpstreamModelFromPayload(completedData)
 	detail, ok := helps.ParseCodexImageToolUsage(completedData)
 	if !ok {
 		return

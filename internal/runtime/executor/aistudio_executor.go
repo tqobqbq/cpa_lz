@@ -183,6 +183,7 @@ func (e *AIStudioExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth,
 	if wsResp.Status < 200 || wsResp.Status >= 300 {
 		return resp, statusErr{code: wsResp.Status, msg: string(wsResp.Body)}
 	}
+	reporter.SetUpstreamModelFromPayload(wsResp.Body)
 	reporter.Publish(ctx, helps.ParseGeminiUsage(wsResp.Body))
 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
 	var param any
@@ -319,6 +320,7 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 					reporter.MarkFirstResponseByte()
 					helps.AppendAPIResponseChunk(ctx, e.cfg, event.Payload)
 					filtered := helps.FilterSSEUsageMetadata(event.Payload)
+					reporter.SetUpstreamModelFromPayload(filtered)
 					if detail, ok := helps.ParseGeminiStreamUsage(filtered); ok {
 						reporter.Publish(ctx, detail)
 					}
@@ -352,6 +354,7 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 						return false
 					}
 				}
+				reporter.SetUpstreamModelFromPayload(event.Payload)
 				reporter.Publish(ctx, helps.ParseGeminiUsage(event.Payload))
 				return false
 			case wsrelay.MessageTypeError:
