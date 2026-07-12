@@ -87,10 +87,11 @@ func writeImagesStreamKeepAlive(c *gin.Context, flusher http.Flusher) {
 	flusher.Flush()
 }
 
-func writeImagesStreamErrorEvent(c *gin.Context, errMsg *interfaces.ErrorMessage) {
+func writeImagesStreamErrorEvent(c *gin.Context, cfg *internalconfig.SDKConfig, errMsg *interfaces.ErrorMessage) {
 	if errMsg == nil {
 		return
 	}
+	errMsg = handlers.ForceRetryableErrorMessage(cfg, errMsg)
 	status := http.StatusInternalServerError
 	if errMsg.StatusCode > 0 {
 		status = errMsg.StatusCode
@@ -1216,7 +1217,7 @@ func (h *OpenAIAPIHandler) streamRoutedImages(c *gin.Context, imageReq []byte, i
 				continue
 			}
 			if streamStarted {
-				writeImagesStreamErrorEvent(c, errMsg)
+				writeImagesStreamErrorEvent(c, h.Cfg, errMsg)
 				flusher.Flush()
 			} else {
 				h.WriteErrorResponse(c, errMsg)
@@ -1273,7 +1274,7 @@ func (h *OpenAIAPIHandler) forwardRawImageStream(ctx context.Context, c *gin.Con
 			return
 		case errMsg, ok := <-errs:
 			if ok && errMsg != nil {
-				writeImagesStreamErrorEvent(c, errMsg)
+				writeImagesStreamErrorEvent(c, h.Cfg, errMsg)
 				if flusher, ok := c.Writer.(http.Flusher); ok {
 					flusher.Flush()
 				}
@@ -1344,7 +1345,7 @@ func (h *OpenAIAPIHandler) streamOpenAICompatImages(c *gin.Context, compatReq []
 				continue
 			}
 			if streamStarted {
-				writeImagesStreamErrorEvent(c, errMsg)
+				writeImagesStreamErrorEvent(c, h.Cfg, errMsg)
 				flusher.Flush()
 			} else {
 				h.WriteErrorResponse(c, errMsg)
@@ -1376,7 +1377,7 @@ func (h *OpenAIAPIHandler) streamOpenAICompatImages(c *gin.Context, compatReq []
 					_, _ = c.Writer.Write(next)
 				},
 				WriteTerminalError: func(errMsg *interfaces.ErrorMessage) {
-					writeImagesStreamErrorEvent(c, errMsg)
+					writeImagesStreamErrorEvent(c, h.Cfg, errMsg)
 				},
 			})
 			return
@@ -1468,7 +1469,7 @@ func (h *OpenAIAPIHandler) streamImagesWithModel(c *gin.Context, imageReq []byte
 	streamStarted := false
 	writeError := func(errMsg *interfaces.ErrorMessage) {
 		if streamStarted {
-			writeImagesStreamErrorEvent(c, errMsg)
+			writeImagesStreamErrorEvent(c, h.Cfg, errMsg)
 			flusher.Flush()
 		} else {
 			h.WriteErrorResponse(c, errMsg)
@@ -1781,7 +1782,7 @@ func (h *OpenAIAPIHandler) streamImagesFromResponses(c *gin.Context, responsesRe
 				continue
 			}
 			if streamStarted {
-				writeImagesStreamErrorEvent(c, errMsg)
+				writeImagesStreamErrorEvent(c, h.Cfg, errMsg)
 				flusher.Flush()
 			} else {
 				h.WriteErrorResponse(c, errMsg)
@@ -1833,7 +1834,7 @@ func (h *OpenAIAPIHandler) forwardImagesStream(ctx context.Context, c *gin.Conte
 	}()
 
 	emitError := func(errMsg *interfaces.ErrorMessage) {
-		writeImagesStreamErrorEvent(c, errMsg)
+		writeImagesStreamErrorEvent(c, h.Cfg, errMsg)
 		flusher.Flush()
 	}
 

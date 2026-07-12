@@ -22,6 +22,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
+	sdkconfig "github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 )
@@ -314,6 +315,7 @@ func (h *ClaudeCodeAPIHandler) forwardClaudeStream(c *gin.Context, flusher http.
 		if errMsg == nil {
 			return
 		}
+		errMsg = handlers.ForceRetryableErrorMessage(h.sdkCfg(), errMsg)
 		status := http.StatusInternalServerError
 		if errMsg.StatusCode > 0 {
 			status = errMsg.StatusCode
@@ -352,6 +354,15 @@ func (h *ClaudeCodeAPIHandler) forwardClaudeStream(c *gin.Context, flusher http.
 	})
 }
 
+// sdkCfg returns the handler configuration, tolerating handlers constructed
+// without an embedded BaseAPIHandler (as unit tests do).
+func (h *ClaudeCodeAPIHandler) sdkCfg() *sdkconfig.SDKConfig {
+	if h == nil || h.BaseAPIHandler == nil {
+		return nil
+	}
+	return h.Cfg
+}
+
 type claudeErrorDetail struct {
 	Type    string `json:"type"`
 	Message string `json:"message"`
@@ -363,6 +374,8 @@ type claudeErrorResponse struct {
 }
 
 func (h *ClaudeCodeAPIHandler) toClaudeError(msg *interfaces.ErrorMessage) claudeErrorResponse {
+	cfg := h.sdkCfg()
+	msg = handlers.ForceRetryableErrorMessage(cfg, msg)
 	status := http.StatusInternalServerError
 	errText := http.StatusText(status)
 	if msg != nil {
@@ -377,6 +390,15 @@ func (h *ClaudeCodeAPIHandler) toClaudeError(msg *interfaces.ErrorMessage) claud
 		}
 	}
 	errType, message := claudeErrorDetailFromText(status, errText)
+	if handlers.ForceRetryableErrorsEnabled(cfg) && !claudeErrorTypeRetryable(errType) {
+		// Terminal types embedded in upstream JSON bodies (invalid_request_error,
+		// authentication_error, ...) would stop client retry loops even after the
+		// status was forced retryable; coerce them to the status-derived type.
+		errType = claudeErrorTypeFromStatus(status)
+		if !claudeErrorTypeRetryable(errType) {
+			errType = "api_error"
+		}
+	}
 	return claudeErrorResponse{
 		Type: "error",
 		Error: claudeErrorDetail{
@@ -386,12 +408,24 @@ func (h *ClaudeCodeAPIHandler) toClaudeError(msg *interfaces.ErrorMessage) claud
 	}
 }
 
+// claudeErrorTypeRetryable reports whether Anthropic clients treat the error
+// type as transient (worth retrying) rather than terminal.
+func claudeErrorTypeRetryable(errType string) bool {
+	switch errType {
+	case "api_error", "overloaded_error", "rate_limit_error", "timeout_error":
+		return true
+	default:
+		return false
+	}
+}
+
 func (h *ClaudeCodeAPIHandler) WriteErrorResponse(c *gin.Context, msg *interfaces.ErrorMessage) {
+	msg = handlers.ForceRetryableErrorMessage(h.sdkCfg(), msg)
 	status := http.StatusInternalServerError
 	if msg != nil && msg.StatusCode > 0 {
 		status = msg.StatusCode
 	}
-	if msg != nil && msg.Addon != nil && handlers.PassthroughHeadersEnabled(h.Cfg) {
+	if msg != nil && msg.Addon != nil && handlers.PassthroughHeadersEnabled(h.sdkCfg()) {
 		for key, values := range msg.Addon {
 			if len(values) == 0 {
 				continue

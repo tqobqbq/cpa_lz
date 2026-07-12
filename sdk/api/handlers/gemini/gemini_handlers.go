@@ -321,6 +321,7 @@ func (h *GeminiAPIHandler) forwardGeminiStream(c *gin.Context, flusher http.Flus
 			if errMsg == nil {
 				return
 			}
+			errMsg = handlers.ForceRetryableErrorMessage(h.Cfg, errMsg)
 			status := http.StatusInternalServerError
 			if errMsg.StatusCode > 0 {
 				status = errMsg.StatusCode

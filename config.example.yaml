@@ -171,6 +171,15 @@ max-retry-interval: 30
 # When true, disable auth/model cooldown scheduling globally (prevents blackout windows after failure states).
 disable-cooling: false
 
+# Rewrite every non-retryable downstream error into a retryable one: statuses
+# outside {408, 429, 5xx} become 500 and terminal error types (e.g.
+# invalid_request_error, authentication_error) are coerced to a retryable
+# server-error type, keeping the original message. Clients such as Claude Code
+# then retry instead of aborting. Caveat: genuinely invalid requests (context
+# too long, malformed payloads) will also be retried even though they can never
+# succeed. Default false.
+force-retryable-errors: false
+
 # When true, persist per-auth cooldown status as .cds files next to auth files.
 # Default is false; when false, cooldown status is kept in memory only.
 save-cooldown-status: false

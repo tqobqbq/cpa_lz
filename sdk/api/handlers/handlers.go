@@ -272,6 +272,54 @@ func PassthroughHeadersEnabled(cfg *config.SDKConfig) bool {
 	return cfg != nil && cfg.PassthroughHeaders
 }
 
+// ForceRetryableErrorsEnabled returns whether downstream errors must be
+// rewritten so clients treat them as retryable. Default is false.
+func ForceRetryableErrorsEnabled(cfg *config.SDKConfig) bool {
+	return cfg != nil && cfg.ForceRetryableErrors
+}
+
+// retryableDownstreamStatus reports whether HTTP clients (Anthropic/OpenAI
+// SDKs, Claude Code) already retry this status automatically: 408, 429 and
+// every 5xx. Everything else is terminal for them.
+func retryableDownstreamStatus(status int) bool {
+	if status >= http.StatusInternalServerError {
+		return true
+	}
+	switch status {
+	case http.StatusRequestTimeout, http.StatusTooManyRequests:
+		return true
+	default:
+		return false
+	}
+}
+
+// ForceRetryableStatus maps a terminal downstream status to 500 so SDK retry
+// loops re-dispatch the request; retryable statuses pass through unchanged.
+func ForceRetryableStatus(cfg *config.SDKConfig, status int) int {
+	if !ForceRetryableErrorsEnabled(cfg) {
+		return status
+	}
+	if status <= 0 || retryableDownstreamStatus(status) {
+		return status
+	}
+	return http.StatusInternalServerError
+}
+
+// ForceRetryableErrorMessage rewrites msg's status when force-retryable-errors
+// is on, returning a shallow copy so shared ErrorMessage values stay intact.
+func ForceRetryableErrorMessage(cfg *config.SDKConfig, msg *interfaces.ErrorMessage) *interfaces.ErrorMessage {
+	if msg == nil || !ForceRetryableErrorsEnabled(cfg) {
+		return msg
+	}
+	forced := ForceRetryableStatus(cfg, msg.StatusCode)
+	if forced == msg.StatusCode {
+		return msg
+	}
+	clone := *msg
+	clone.StatusCode = forced
+	return &clone
+}
+
 func requestExecutionMetadata(ctx context.Context, rawJSON []byte) map[string]any {
 	// Idempotency-Key is an optional client-supplied header used to correlate retries.
 	// Only include it if the client explicitly provides it.
@@ -2075,6 +2123,7 @@ func enrichAuthSelectionError(err error, providers []string, model string) error
 
 // WriteErrorResponse writes an error message to the response writer using the HTTP status embedded in the message.
 func (h *BaseAPIHandler) WriteErrorResponse(c *gin.Context, msg *interfaces.ErrorMessage) {
+	msg = ForceRetryableErrorMessage(h.Cfg, msg)
 	status := http.StatusInternalServerError
 	if msg != nil && msg.StatusCode > 0 {
 		status = msg.StatusCode

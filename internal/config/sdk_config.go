@@ -49,6 +49,16 @@ type SDKConfig struct {
 	// Default is false (disabled).
 	PassthroughHeaders bool `yaml:"passthrough-headers" json:"passthrough-headers"`
 
+	// ForceRetryableErrors rewrites every non-retryable downstream error into a
+	// retryable one: HTTP statuses outside {408, 429, 5xx} are rewritten to 500
+	// and terminal error types (invalid_request_error, authentication_error,
+	// permission_error, not_found_error, billing_error, request_too_large) are
+	// coerced to a retryable server-error type, keeping the original message.
+	// This makes clients such as Claude Code retry instead of aborting. Note:
+	// genuinely invalid requests (e.g. context too long) will then be retried
+	// by clients even though they can never succeed. Default false.
+	ForceRetryableErrors bool `yaml:"force-retryable-errors" json:"force-retryable-errors"`
+
 	// Streaming configures server-side streaming behavior (keep-alives and safe bootstrap retries).
 	Streaming StreamingConfig `yaml:"streaming" json:"streaming"`
 

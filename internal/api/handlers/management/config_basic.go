@@ -350,6 +350,14 @@ func (h *Handler) PutForceModelPrefix(c *gin.Context) {
 	h.updateBoolField(c, func(v bool) { h.cfg.ForceModelPrefix = v })
 }
 
+// ForceRetryableErrors
+func (h *Handler) GetForceRetryableErrors(c *gin.Context) {
+	c.JSON(200, gin.H{"force-retryable-errors": h.cfg.ForceRetryableErrors})
+}
+func (h *Handler) PutForceRetryableErrors(c *gin.Context) {
+	h.updateBoolField(c, func(v bool) { h.cfg.ForceRetryableErrors = v })
+}
+
 func normalizeRoutingStrategy(strategy string) (string, bool) {
 	normalized := strings.ToLower(strings.TrimSpace(strategy))
 	switch normalized {

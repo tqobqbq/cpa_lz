@@ -672,6 +672,7 @@ func (h *OpenAIAPIHandler) handleStreamResult(c *gin.Context, flusher http.Flush
 			if errMsg == nil {
 				return
 			}
+			errMsg = handlers.ForceRetryableErrorMessage(h.Cfg, errMsg)
 			status := http.StatusInternalServerError
 			if errMsg.StatusCode > 0 {
 				status = errMsg.StatusCode

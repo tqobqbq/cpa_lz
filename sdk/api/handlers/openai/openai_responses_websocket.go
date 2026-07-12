@@ -23,6 +23,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	sdkconfig "github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -355,7 +356,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 		if errMsg != nil {
 			h.LoggingAPIResponseError(context.WithValue(context.Background(), "gin", c), errMsg)
 			markAPIResponseTimestamp(c)
-			errorPayload, errWrite := writeResponsesWebsocketError(conn, wsTimelineLog, errMsg)
+			errorPayload, errWrite := writeResponsesWebsocketError(conn, wsTimelineLog, h.Cfg, errMsg)
 			log.Infof(
 				"responses websocket: downstream_out id=%s type=%d event=%s payload=%s",
 				passthroughSessionID,
@@ -1315,6 +1316,10 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 	if c != nil && c.Request != nil {
 		downstreamSessionKey = websocketDownstreamSessionKey(c.Request)
 	}
+	var cfg *sdkconfig.SDKConfig
+	if h != nil && h.BaseAPIHandler != nil {
+		cfg = h.Cfg
+	}
 
 	for {
 		select {
@@ -1327,9 +1332,11 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 				continue
 			}
 			if errMsg != nil {
-				h.LoggingAPIResponseError(context.WithValue(context.Background(), "gin", c), errMsg)
+				if h != nil {
+					h.LoggingAPIResponseError(context.WithValue(context.Background(), "gin", c), errMsg)
+				}
 				markAPIResponseTimestamp(c)
-				errorPayload, errWrite := writeResponsesWebsocketError(conn, wsTimelineLog, errMsg)
+				errorPayload, errWrite := writeResponsesWebsocketError(conn, wsTimelineLog, cfg, errMsg)
 				log.Infof(
 					"responses websocket: downstream_out id=%s type=%d event=%s payload=%s",
 					sessionID,
@@ -1361,9 +1368,11 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 						StatusCode: http.StatusRequestTimeout,
 						Error:      fmt.Errorf("stream closed before response.completed"),
 					}
-					h.LoggingAPIResponseError(context.WithValue(context.Background(), "gin", c), errMsg)
+					if h != nil {
+						h.LoggingAPIResponseError(context.WithValue(context.Background(), "gin", c), errMsg)
+					}
 					markAPIResponseTimestamp(c)
-					errorPayload, errWrite := writeResponsesWebsocketError(conn, wsTimelineLog, errMsg)
+					errorPayload, errWrite := writeResponsesWebsocketError(conn, wsTimelineLog, cfg, errMsg)
 					log.Infof(
 						"responses websocket: downstream_out id=%s type=%d event=%s payload=%s",
 						sessionID,
@@ -1396,6 +1405,10 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 				var payloadErrMsg *interfaces.ErrorMessage
 				if eventType == wsEventTypeError {
 					payloadErrMsg = responsesWebsocketErrorMessageFromPayload(payloads[i])
+					if forced := handlers.ForceRetryableErrorMessage(cfg, payloadErrMsg); forced != payloadErrMsg {
+						payloadErrMsg = forced
+						payloads[i] = forceRetryableWebsocketErrorPayload(payloads[i], forced.StatusCode)
+					}
 					if h != nil {
 						h.LoggingAPIResponseError(context.WithValue(context.Background(), "gin", c), payloadErrMsg)
 					}
@@ -1558,7 +1571,8 @@ func websocketJSONPayloadsFromChunk(chunk []byte) [][]byte {
 	return payloads
 }
 
-func writeResponsesWebsocketError(conn *websocket.Conn, wsTimelineLog websocketTimelineAppender, errMsg *interfaces.ErrorMessage) ([]byte, error) {
+func writeResponsesWebsocketError(conn *websocket.Conn, wsTimelineLog websocketTimelineAppender, cfg *sdkconfig.SDKConfig, errMsg *interfaces.ErrorMessage) ([]byte, error) {
+	errMsg = handlers.ForceRetryableErrorMessage(cfg, errMsg)
 	status := http.StatusInternalServerError
 	errText := http.StatusText(status)
 	if errMsg != nil {
@@ -1669,6 +1683,24 @@ func websocketPayloadPreview(payload []byte) string {
 
 func isResponsesWebsocketCompletionEvent(eventType string) bool {
 	return eventType == wsEventTypeCompleted || eventType == wsEventTypeDone
+}
+
+// forceRetryableWebsocketErrorPayload rewrites the status field of an upstream
+// websocket error event so downstream clients classify it as retryable.
+func forceRetryableWebsocketErrorPayload(payload []byte, status int) []byte {
+	if status <= 0 {
+		return payload
+	}
+	updated, errSet := sjson.SetBytes(payload, "status", status)
+	if errSet != nil {
+		return payload
+	}
+	if gjson.GetBytes(updated, "status_code").Exists() {
+		if again, errCode := sjson.SetBytes(updated, "status_code", status); errCode == nil {
+			updated = again
+		}
+	}
+	return updated
 }
 
 func responsesWebsocketErrorMessageFromPayload(payload []byte) *interfaces.ErrorMessage {
