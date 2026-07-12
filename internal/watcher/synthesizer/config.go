@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher/diff"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
@@ -56,6 +57,84 @@ func applyConfigDisplayAttrs(attrs map[string]string, provider string, index int
 	attrs["display_source"] = fmt.Sprintf("%s#%d", provider, index)
 }
 
+func normalizeBackoffMode(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "off":
+		return "off"
+	case "custom":
+		return "custom"
+	default:
+		return "default"
+	}
+}
+
+// applyBackoffMetadata copies per-credential backoff/error-control/cooldown
+// config into auth metadata so the conductor's override accessors see them.
+func applyBackoffMetadata(metadata map[string]any, mode string, requestRetry *int, errorControl config.ErrorControlPolicy, cooldown config.ProviderCooldownConfig) {
+	if metadata == nil {
+		return
+	}
+	if strings.TrimSpace(mode) != "" {
+		metadata["backoff_mode"] = normalizeBackoffMode(mode)
+	}
+	if requestRetry != nil {
+		retry := *requestRetry
+		if retry < 0 {
+			retry = 0
+		}
+		metadata["request_retry"] = retry
+	}
+	if errorControl.RetryRounds != nil {
+		rounds := *errorControl.RetryRounds
+		if rounds < 1 {
+			rounds = 1
+		}
+		metadata["retry_rounds"] = rounds
+	}
+	if errorControl.RoundBackoffBase != nil {
+		v := *errorControl.RoundBackoffBase
+		if v <= 0 {
+			v = 1
+		}
+		metadata["round_backoff_base"] = v
+	}
+	if errorControl.RoundBackoffExponent != nil {
+		v := *errorControl.RoundBackoffExponent
+		if v <= 0 {
+			v = 2
+		}
+		metadata["round_backoff_exponent"] = v
+	}
+	if errorControl.RoundBackoffMax != nil {
+		v := *errorControl.RoundBackoffMax
+		if v <= 0 {
+			v = 60
+		}
+		metadata["round_backoff_max"] = v
+	}
+	if cooldown.Start != nil {
+		v := *cooldown.Start
+		if v < 1 {
+			v = config.DefaultProviderCooldownStart
+		}
+		metadata["cooldown_start"] = v
+	}
+	if cooldown.Exponent != nil {
+		v := *cooldown.Exponent
+		if v <= 0 {
+			v = config.DefaultProviderCooldownExponent
+		}
+		metadata["cooldown_exponent"] = v
+	}
+	if cooldown.Max != nil {
+		v := *cooldown.Max
+		if v < 1 {
+			v = config.DefaultProviderCooldownMax
+		}
+		metadata["cooldown_max"] = v
+	}
+}
+
 func (s *ConfigSynthesizer) synthesizeGeminiKeys(ctx *SynthesisContext) []*coreauth.Auth {
 	cfg := ctx.Config
 	now := ctx.Now
@@ -81,6 +160,7 @@ func (s *ConfigSynthesizer) synthesizeGeminiKeys(ctx *SynthesisContext) []*corea
 		if entry.DisableCooling {
 			metadata["disable_cooling"] = true
 		}
+		applyBackoffMetadata(metadata, entry.BackoffMode, entry.RequestRetry, entry.ErrorControl, entry.Cooldown)
 		if entry.Priority != 0 {
 			attrs["priority"] = strconv.Itoa(entry.Priority)
 		}
@@ -137,6 +217,7 @@ func (s *ConfigSynthesizer) synthesizeClaudeKeys(ctx *SynthesisContext) []*corea
 		if ck.DisableCooling {
 			metadata["disable_cooling"] = true
 		}
+		applyBackoffMetadata(metadata, ck.BackoffMode, ck.RequestRetry, ck.ErrorControl, ck.Cooldown)
 		if ck.Priority != 0 {
 			attrs["priority"] = strconv.Itoa(ck.Priority)
 		}
@@ -199,6 +280,7 @@ func (s *ConfigSynthesizer) synthesizeCodexKeys(ctx *SynthesisContext) []*coreau
 		if ck.DisableCooling {
 			metadata["disable_cooling"] = true
 		}
+		applyBackoffMetadata(metadata, ck.BackoffMode, ck.RequestRetry, ck.ErrorControl, ck.Cooldown)
 		if ck.Priority != 0 {
 			attrs["priority"] = strconv.Itoa(ck.Priority)
 		}
@@ -279,6 +361,7 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 			if disableCooling {
 				metadata["disable_cooling"] = true
 			}
+			applyBackoffMetadata(metadata, compat.BackoffMode, compat.RequestRetry, compat.ErrorControl, compat.Cooldown)
 			if compat.Priority != 0 {
 				attrs["priority"] = strconv.Itoa(compat.Priority)
 			}
@@ -322,6 +405,7 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 			if disableCooling {
 				metadata["disable_cooling"] = true
 			}
+			applyBackoffMetadata(metadata, compat.BackoffMode, compat.RequestRetry, compat.ErrorControl, compat.Cooldown)
 			if compat.Priority != 0 {
 				attrs["priority"] = strconv.Itoa(compat.Priority)
 			}
@@ -372,6 +456,8 @@ func (s *ConfigSynthesizer) synthesizeVertexCompat(ctx *SynthesisContext) []*cor
 			"provider_key": providerName,
 		}
 		applyConfigDisplayAttrs(attrs, providerName, i)
+		vertexMetadata := map[string]any{}
+		applyBackoffMetadata(vertexMetadata, compat.BackoffMode, compat.RequestRetry, compat.ErrorControl, compat.Cooldown)
 		if compat.Priority != 0 {
 			attrs["priority"] = strconv.Itoa(compat.Priority)
 		}
@@ -390,10 +476,14 @@ func (s *ConfigSynthesizer) synthesizeVertexCompat(ctx *SynthesisContext) []*cor
 			Status:     coreauth.StatusActive,
 			ProxyURL:   proxyURL,
 			Attributes: attrs,
+			Metadata:   vertexMetadata,
 			CreatedAt:  now,
 			UpdatedAt:  now,
 		}
 		ApplyAuthExcludedModelsMeta(a, cfg, compat.ExcludedModels, "apikey")
+		if len(a.Metadata) == 0 {
+			a.Metadata = nil
+		}
 		out = append(out, a)
 	}
 	return out

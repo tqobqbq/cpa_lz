@@ -162,7 +162,8 @@ func WithDisallowFreeAuth(ctx context.Context) context.Context {
 }
 
 // BuildErrorResponseBody builds an OpenAI-compatible JSON error response body.
-// If errText is already valid JSON, it is returned as-is to preserve upstream error payloads.
+// If errText is already valid JSON, it is returned as-is to preserve upstream error payloads,
+// except for canonical upstream_exhausted errors which must stay sanitized.
 func BuildErrorResponseBody(status int, errText string) []byte {
 	if status <= 0 {
 		status = http.StatusInternalServerError
@@ -172,29 +173,45 @@ func BuildErrorResponseBody(status int, errText string) []byte {
 	}
 
 	trimmed := strings.TrimSpace(errText)
-	if trimmed != "" && json.Valid([]byte(trimmed)) {
+	forcedCode := ""
+	if strings.HasPrefix(trimmed, "upstream_exhausted:") {
+		forcedCode = "upstream_exhausted"
+		errText = "Upstream providers exhausted after retries"
+		trimmed = strings.TrimSpace(errText)
+	}
+	if forcedCode == "" && trimmed != "" && json.Valid([]byte(trimmed)) {
 		return []byte(trimmed)
 	}
 
 	errType := "invalid_request_error"
-	var code string
+	code := forcedCode
 	switch status {
 	case http.StatusUnauthorized:
 		errType = "authentication_error"
-		code = "invalid_api_key"
+		if code == "" {
+			code = "invalid_api_key"
+		}
 	case http.StatusForbidden:
 		errType = "permission_error"
-		code = "insufficient_quota"
+		if code == "" {
+			code = "insufficient_quota"
+		}
 	case http.StatusTooManyRequests:
 		errType = "rate_limit_error"
-		code = "rate_limit_exceeded"
+		if code == "" {
+			code = "rate_limit_exceeded"
+		}
 	case http.StatusNotFound:
 		errType = "invalid_request_error"
-		code = "model_not_found"
+		if code == "" {
+			code = "model_not_found"
+		}
 	default:
 		if status >= http.StatusInternalServerError {
 			errType = "server_error"
-			code = "internal_server_error"
+			if code == "" {
+				code = "internal_server_error"
+			}
 		}
 	}
 

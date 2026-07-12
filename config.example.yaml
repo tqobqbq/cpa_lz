@@ -142,6 +142,32 @@ max-retry-credentials: 0
 # Maximum wait time in seconds for a cooled-down credential before triggering a retry.
 max-retry-interval: 30
 
+# Error control retries upstream failures across the whole credential pool before
+# returning a sanitized retryable error (code "upstream_exhausted") downstream.
+# Each retry round walks every eligible credential once; rounds beyond the first
+# only keep credentials whose policy allows that round.
+# error-control:
+#   default:
+#     retry-rounds: 1     # Full candidate-set rounds before final failure (default 1).
+#     # Exponential backoff between outer retry rounds (seconds).
+#     # Formula: wait = min(round-backoff-base * round-backoff-exponent^(round-1), round-backoff-max)
+#     round-backoff-base: 1.0      # First backoff duration (seconds), default 1.
+#     round-backoff-exponent: 2.0  # Backoff growth factor, default 2.
+#     round-backoff-max: 60.0      # Maximum backoff duration (seconds), default 60.
+#   providers:
+#     claude:
+#       retry-rounds: 2
+
+# Counted provider cooldown: after each failure a credential skips floor(raw)
+# subsequent dispatch opportunities, where raw starts at `start` and multiplies
+# by `exponent` per consecutive failure, capped at `max`. Success resets the
+# counter. This complements time-based auth-file cooldowns and is the only
+# cooldown applied to config-synthesized API keys.
+# provider-cooldown:
+#   start: 1
+#   exponent: 1.2
+#   max: 10
+
 # When true, disable auth/model cooldown scheduling globally (prevents blackout windows after failure states).
 disable-cooling: false
 
@@ -186,7 +212,12 @@ quota-exceeded:
 
 # Routing strategy for selecting credentials when multiple match.
 routing:
-  strategy: "round-robin" # round-robin (default), fill-first
+  strategy: "round-robin" # round-robin (default), fill-first, last-success
+  # Parallel dispatch: when a credential keeps failing, later retry rounds may
+  # race several same-priority credentials at once and keep the first success.
+  # parallel-requests-enabled: false
+  # parallel-requests-min-round: 1    # 1-based round on which parallel dispatch may start.
+  # parallel-requests-min-failures: 1 # Consecutive failures before a credential races.
   # Prefer a provider first when downstream request metadata matches these rules.
   # The request still falls back to the normal mixed-provider scheduler if the preferred provider has no ready auth.
   # user-agent and input-chars are optional; if omitted, the rule matches all requests for that provider.

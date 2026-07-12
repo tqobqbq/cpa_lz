@@ -37,6 +37,18 @@ type VertexCompatKey struct {
 
 	// ExcludedModels lists model IDs that should be excluded for this provider.
 	ExcludedModels []string `yaml:"excluded-models,omitempty" json:"excluded-models,omitempty"`
+
+	// BackoffMode controls how cooldown/backoff applies to this credential.
+	BackoffMode string `yaml:"backoff-mode,omitempty" json:"backoff-mode,omitempty"`
+
+	// RequestRetry overrides the retry count when BackoffMode is custom.
+	RequestRetry *int `yaml:"request-retry,omitempty" json:"request-retry,omitempty"`
+
+	// ErrorControl overrides provider retry behavior for this credential.
+	ErrorControl ErrorControlPolicy `yaml:"error-control,omitempty" json:"error-control,omitempty"`
+
+	// Cooldown overrides count-based failure cooldown for this credential.
+	Cooldown ProviderCooldownConfig `yaml:"cooldown,omitempty" json:"cooldown,omitempty"`
 }
 
 func (k VertexCompatKey) GetAPIKey() string  { return k.APIKey }
@@ -78,6 +90,8 @@ func (cfg *Config) SanitizeVertexCompatKeys() {
 		entry.ProxyURL = strings.TrimSpace(entry.ProxyURL)
 		entry.Headers = NormalizeHeaders(entry.Headers)
 		entry.ExcludedModels = NormalizeExcludedModels(entry.ExcludedModels)
+		entry.ErrorControl = sanitizeErrorControlPolicy(entry.ErrorControl)
+		entry.Cooldown = sanitizeProviderCooldownConfig(entry.Cooldown)
 
 		// Sanitize models: remove entries without valid alias
 		sanitizedModels := make([]VertexCompatModel, 0, len(entry.Models))

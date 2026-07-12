@@ -95,7 +95,7 @@ func TestPendingClaudeStreamErrorUsesBufferedError(t *testing.T) {
 	}
 }
 
-func TestForwardClaudeStreamTransportErrorAbortsWithoutErrorEvent(t *testing.T) {
+func TestForwardClaudeStreamTransportErrorWritesParseableErrorEvent(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
@@ -115,11 +115,72 @@ func TestForwardClaudeStreamTransportErrorAbortsWithoutErrorEvent(t *testing.T) 
 
 	handler.forwardClaudeStream(c, flusher, func(err error) { canceled = err }, data, errs)
 
-	if recorder.Body.Len() != 0 {
-		t.Fatalf("body = %q, want no terminal error event", recorder.Body.String())
+	body := recorder.Body.String()
+	if !strings.Contains(body, "event: error") {
+		t.Fatalf("body = %q, want terminal error event", body)
 	}
-	if canceled == nil || !isRetryableClaudeTransportError(&interfaces.ErrorMessage{StatusCode: http.StatusInternalServerError, Error: canceled}) {
-		t.Fatalf("cancel error = %v, want retryable transport error", canceled)
+	payload := strings.TrimSpace(strings.TrimPrefix(body, "event: error\ndata: "))
+	if !gjson.Valid(payload) {
+		t.Fatalf("error event payload is not valid JSON: %q", payload)
+	}
+	if got := gjson.Get(payload, "error.type").String(); got != "api_error" {
+		t.Fatalf("error.type = %q, want api_error; body=%s", got, body)
+	}
+	if canceled == nil {
+		t.Fatal("cancel error = nil, want transport error")
+	}
+}
+
+func TestForwardClaudeStreamEmptyCloseWritesErrorEvent(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	flusher, ok := c.Writer.(http.Flusher)
+	if !ok {
+		t.Fatal("test response writer does not implement http.Flusher")
+	}
+	handler := &ClaudeCodeAPIHandler{BaseAPIHandler: &handlers.BaseAPIHandler{}}
+	data := make(chan []byte)
+	errs := make(chan *interfaces.ErrorMessage)
+	close(data)
+	close(errs)
+
+	handler.forwardClaudeStream(c, flusher, func(error) {}, data, errs)
+
+	body := recorder.Body.String()
+	if !strings.Contains(body, "event: error") {
+		t.Fatalf("body = %q, want empty-stream error event", body)
+	}
+	if !strings.Contains(body, "upstream returned an empty response") {
+		t.Fatalf("body = %q, want empty response message", body)
+	}
+}
+
+func TestForwardClaudeStreamChunksSuppressEmptyCloseError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	flusher, ok := c.Writer.(http.Flusher)
+	if !ok {
+		t.Fatal("test response writer does not implement http.Flusher")
+	}
+	handler := &ClaudeCodeAPIHandler{BaseAPIHandler: &handlers.BaseAPIHandler{}}
+	data := make(chan []byte, 1)
+	errs := make(chan *interfaces.ErrorMessage)
+	data <- []byte("event: message_stop\ndata: {}\n\n")
+	close(data)
+	close(errs)
+
+	handler.forwardClaudeStream(c, flusher, func(error) {}, data, errs)
+
+	body := recorder.Body.String()
+	if !strings.Contains(body, "message_stop") {
+		t.Fatalf("body = %q, want forwarded chunk", body)
+	}
+	if strings.Contains(body, "event: error") {
+		t.Fatalf("body = %q, want no error event after successful chunks", body)
 	}
 }
 

@@ -11,13 +11,10 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -312,92 +309,47 @@ func pendingClaudeStreamError(errs <-chan *interfaces.ErrorMessage) (*interfaces
 }
 
 func (h *ClaudeCodeAPIHandler) forwardClaudeStream(c *gin.Context, flusher http.Flusher, cancel func(error), data <-chan []byte, errs <-chan *interfaces.ErrorMessage) {
+	wroteChunk := false
+	writeStreamError := func(errMsg *interfaces.ErrorMessage) {
+		if errMsg == nil {
+			return
+		}
+		status := http.StatusInternalServerError
+		if errMsg.StatusCode > 0 {
+			status = errMsg.StatusCode
+		}
+		if !c.Writer.Written() {
+			c.Status(status)
+		}
+
+		errorBytes, _ := json.Marshal(h.toClaudeError(errMsg))
+		_, _ = fmt.Fprintf(c.Writer, "event: error\ndata: %s\n\n", errorBytes)
+	}
+
 	h.ForwardStream(c, flusher, cancel, data, errs, handlers.StreamForwardOptions{
 		WriteChunk: func(chunk []byte) {
 			if len(chunk) == 0 {
 				return
 			}
+			wroteChunk = true
 			_, _ = c.Writer.Write(chunk)
 		},
-		AbortTerminalError: func(errMsg *interfaces.ErrorMessage) bool {
-			if !isRetryableClaudeTransportError(errMsg) {
-				return false
-			}
-			abortHTTPStream(c)
-			return true
-		},
-		WriteTerminalError: func(errMsg *interfaces.ErrorMessage) {
-			if errMsg == nil {
+		WriteDone: func() {
+			if wroteChunk {
 				return
 			}
-			status := http.StatusInternalServerError
-			if errMsg.StatusCode > 0 {
-				status = errMsg.StatusCode
-			}
-			c.Status(status)
-
-			errorBytes, _ := json.Marshal(h.toClaudeError(errMsg))
-			_, _ = fmt.Fprintf(c.Writer, "event: error\ndata: %s\n\n", errorBytes)
+			// The upstream closed without emitting anything. Emit a parseable
+			// SSE error event instead of ending the stream silently, which
+			// downstream clients surface as "JSON Parse error: Unexpected EOF".
+			writeStreamError(&interfaces.ErrorMessage{
+				StatusCode: http.StatusBadGateway,
+				Error:      fmt.Errorf("upstream returned an empty response"),
+			})
+		},
+		WriteTerminalError: func(errMsg *interfaces.ErrorMessage) {
+			writeStreamError(errMsg)
 		},
 	})
-}
-
-func isRetryableClaudeTransportError(errMsg *interfaces.ErrorMessage) bool {
-	if errMsg == nil || errMsg.Error == nil {
-		return false
-	}
-	status := errMsg.StatusCode
-	if status > 0 && status != http.StatusRequestTimeout && status < http.StatusInternalServerError {
-		return false
-	}
-	err := errMsg.Error
-	if errors.Is(err, io.ErrUnexpectedEOF) ||
-		errors.Is(err, syscall.ECONNRESET) ||
-		errors.Is(err, syscall.ECONNABORTED) ||
-		errors.Is(err, syscall.EPIPE) ||
-		errors.Is(err, syscall.ETIMEDOUT) {
-		return true
-	}
-	var netErr net.Error
-	if errors.As(err, &netErr) && netErr.Timeout() {
-		return true
-	}
-	text := strings.ToLower(strings.TrimSpace(err.Error()))
-	if text == "" {
-		return false
-	}
-	for _, marker := range []string{
-		"connection reset by peer",
-		"connection aborted",
-		"connection refused",
-		"broken pipe",
-		"i/o timeout",
-		"unexpected eof",
-		"use of closed network connection",
-	} {
-		if strings.Contains(text, marker) {
-			return true
-		}
-	}
-	return false
-}
-
-func abortHTTPStream(c *gin.Context) {
-	if c == nil || c.Writer == nil {
-		return
-	}
-	hijacker, ok := c.Writer.(http.Hijacker)
-	if !ok {
-		return
-	}
-	defer func() {
-		_ = recover()
-	}()
-	conn, _, err := hijacker.Hijack()
-	if err != nil {
-		return
-	}
-	_ = conn.Close()
 }
 
 type claudeErrorDetail struct {
@@ -469,6 +421,12 @@ func claudeErrorDetailFromText(status int, errText string) (string, string) {
 		message = http.StatusText(status)
 	}
 	errType := claudeErrorTypeFromStatus(status)
+
+	// Terminal retry-engine errors keep a stable, provider-neutral body so
+	// downstream clients treat them as retryable without seeing upstream noise.
+	if strings.HasPrefix(message, "upstream_exhausted:") {
+		return errType, "Upstream providers exhausted after retries"
+	}
 
 	var payload map[string]any
 	if json.Valid([]byte(message)) {

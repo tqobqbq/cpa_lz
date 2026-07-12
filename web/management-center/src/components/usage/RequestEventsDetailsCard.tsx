@@ -55,6 +55,9 @@ type RequestEventRow = {
   requestCount: number | null;
   retryRound: number | null;
   roundDispatchIndex: number | null;
+  parallelEligible: boolean | null;
+  providerCooldownRemaining: number | null;
+  providerCooldownGeneratedRaw: number | null;
   dispatchInfo: string;
   latencyMs: number | null;
   inputTokens: number;
@@ -103,6 +106,13 @@ const formatDispatchNumber = (value: number | null): string => {
     return '-';
   }
   return Number.isInteger(value) ? String(value) : String(Number(value.toFixed(6)));
+};
+
+const formatDispatchBoolean = (value: boolean | null): string => {
+  if (value === null) {
+    return '-';
+  }
+  return value ? 'Y' : 'N';
 };
 
 const encodeCsv = (value: string | number | boolean): string => {
@@ -219,12 +229,28 @@ export function RequestEventsDetailsCard({
       const requestCount = toOptionalNumber(detail.request_count);
       const retryRound = toOptionalNumber(detail.retry_round);
       const roundDispatchIndex = toOptionalNumber(detail.round_dispatch_index);
-      const hasDispatchMetadata = requestCount !== null;
-      const dispatchInfo = hasDispatchMetadata
-        ? [requestCount, retryRound ?? 0, roundDispatchIndex ?? 0]
-            .map((value) => formatDispatchNumber(value))
-            .join(',')
-        : '-';
+      const parallelEligible =
+        typeof detail.parallel_eligible === 'boolean' ? detail.parallel_eligible : null;
+      const hasDispatchMetadata = requestCount !== null || retryRound !== null;
+      const providerCooldownRemaining =
+        toOptionalNumber(detail.provider_cooldown_remaining) ?? (hasDispatchMetadata ? 0 : null);
+      const providerCooldownGeneratedRaw =
+        toOptionalNumber(detail.provider_cooldown_generated_raw) ??
+        (hasDispatchMetadata ? 0 : null);
+      const dispatchInfo = [
+        requestCount,
+        retryRound,
+        roundDispatchIndex,
+        parallelEligible,
+        providerCooldownRemaining,
+        providerCooldownGeneratedRaw,
+      ]
+        .map((value) =>
+          typeof value === 'boolean' || value === null
+            ? formatDispatchBoolean(value as boolean | null)
+            : formatDispatchNumber(value)
+        )
+        .join(',');
 
       return {
         id: `${timestamp}-${model}-${sourceKey}-${upstreamModel}-${index}`,
@@ -247,6 +273,9 @@ export function RequestEventsDetailsCard({
         requestCount,
         retryRound,
         roundDispatchIndex,
+        parallelEligible,
+        providerCooldownRemaining,
+        providerCooldownGeneratedRaw,
         dispatchInfo,
         latencyMs,
         inputTokens,
@@ -377,6 +406,9 @@ export function RequestEventsDetailsCard({
       'request_count',
       'retry_round',
       'round_dispatch_index',
+      'parallel_eligible',
+      'provider_cooldown_remaining',
+      'provider_cooldown_generated_raw',
       ...(hasLatencyData ? ['latency_ms'] : []),
       'cost',
       'input_tokens',
@@ -407,6 +439,9 @@ export function RequestEventsDetailsCard({
         row.requestCount ?? '',
         row.retryRound ?? '',
         row.roundDispatchIndex ?? '',
+        row.parallelEligible ?? '',
+        row.providerCooldownRemaining ?? '',
+        row.providerCooldownGeneratedRaw ?? '',
         ...(hasLatencyData ? [row.latencyMs ?? ''] : []),
         row.cost,
         row.inputTokens,
@@ -450,6 +485,9 @@ export function RequestEventsDetailsCard({
       request_count: row.requestCount,
       retry_round: row.retryRound,
       round_dispatch_index: row.roundDispatchIndex,
+      parallel_eligible: row.parallelEligible,
+      provider_cooldown_remaining: row.providerCooldownRemaining,
+      provider_cooldown_generated_raw: row.providerCooldownGeneratedRaw,
       ...(hasLatencyData && row.latencyMs !== null ? { latency_ms: row.latencyMs } : {}),
       cost: row.cost,
       tokens: {

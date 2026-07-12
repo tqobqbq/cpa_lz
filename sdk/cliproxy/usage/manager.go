@@ -2,6 +2,7 @@ package usage
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 	"sync"
@@ -338,10 +339,16 @@ func StopDefault() { DefaultManager().Stop() }
 type RequestMetadata struct {
 	// RequestCount is a process-local sequence number for downstream requests.
 	RequestCount uint64
-	// RetryRound is the zero-based outer retry pass the attempt ran in.
+	// RetryRound is the one-based outer retry round the attempt ran in.
 	RetryRound int
-	// RoundDispatchIndex is the zero-based credential position within the pass.
+	// RoundDispatchIndex is the one-based dispatch position within the round.
 	RoundDispatchIndex int
+	// ParallelEligible marks candidates allowed to dispatch concurrently.
+	ParallelEligible bool
+	// ProviderCooldownRemaining is the count-based cooldown left before this attempt.
+	ProviderCooldownRemaining int
+	// ProviderCooldownGeneratedRaw is the raw cooldown value the next failure would produce.
+	ProviderCooldownGeneratedRaw float64
 }
 
 type requestMetadataContextKey struct{}
@@ -366,6 +373,17 @@ func MetadataFromContext(ctx context.Context) RequestMetadata {
 }
 
 var requestCounter atomic.Uint64
+
+// ErrParallelRequestAborted marks parallel candidate contexts canceled because a sibling won.
+var ErrParallelRequestAborted = errors.New("parallel upstream request aborted after another candidate succeeded")
+
+// IsParallelRequestAborted reports whether ctx was canceled because another parallel candidate succeeded.
+func IsParallelRequestAborted(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	return errors.Is(context.Cause(ctx), ErrParallelRequestAborted)
+}
 
 // EnsureRequestContext attaches a process-local downstream request count when missing.
 func EnsureRequestContext(ctx context.Context) context.Context {

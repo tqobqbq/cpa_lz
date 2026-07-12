@@ -6,6 +6,7 @@ package usage
 import (
 	"context"
 	"fmt"
+	"math"
 	"net/http"
 	"sort"
 	"strings"
@@ -120,21 +121,24 @@ type modelStats struct {
 
 // RequestDetail stores the timestamp, latency, and token usage for a single request.
 type RequestDetail struct {
-	Timestamp          time.Time  `json:"timestamp"`
-	LatencyMs          int64      `json:"latency_ms"`
-	Source             string     `json:"source"`
-	AuthIndex          string     `json:"auth_index,omitempty"`
-	UpstreamModel      string     `json:"upstream_model,omitempty"`
-	UserAgent          string     `json:"user_agent,omitempty"`
-	InputChars         int64      `json:"input_chars,omitempty"`
-	StatusCode         int        `json:"status_code,omitempty"`
-	ErrorReason        string     `json:"error_reason,omitempty"`
-	ErrorMessage       string     `json:"error_message,omitempty"`
-	RequestCount       uint64     `json:"request_count,omitempty"`
-	RetryRound         int        `json:"retry_round,omitempty"`
-	RoundDispatchIndex int        `json:"round_dispatch_index,omitempty"`
-	Tokens             TokenStats `json:"tokens"`
-	Failed             bool       `json:"failed"`
+	Timestamp                    time.Time  `json:"timestamp"`
+	LatencyMs                    int64      `json:"latency_ms"`
+	Source                       string     `json:"source"`
+	AuthIndex                    string     `json:"auth_index,omitempty"`
+	UpstreamModel                string     `json:"upstream_model,omitempty"`
+	UserAgent                    string     `json:"user_agent,omitempty"`
+	InputChars                   int64      `json:"input_chars,omitempty"`
+	StatusCode                   int        `json:"status_code,omitempty"`
+	ErrorReason                  string     `json:"error_reason,omitempty"`
+	ErrorMessage                 string     `json:"error_message,omitempty"`
+	RequestCount                 uint64     `json:"request_count,omitempty"`
+	RetryRound                   int        `json:"retry_round,omitempty"`
+	RoundDispatchIndex           int        `json:"round_dispatch_index,omitempty"`
+	ParallelEligible             bool       `json:"parallel_eligible"`
+	ProviderCooldownRemaining    int        `json:"provider_cooldown_remaining,omitempty"`
+	ProviderCooldownGeneratedRaw float64    `json:"provider_cooldown_generated_raw,omitempty"`
+	Tokens                       TokenStats `json:"tokens"`
+	Failed                       bool       `json:"failed"`
 }
 
 // TokenStats captures the token usage breakdown for a request.
@@ -269,7 +273,11 @@ func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record)
 	statusCode := 0
 	errorReason := ""
 	errorMessage := ""
-	if failed {
+	parallelAborted := failed && coreusage.IsParallelRequestAborted(ctx)
+	if parallelAborted {
+		errorReason = "parallel_request_aborted"
+		errorMessage = coreusage.ErrParallelRequestAborted.Error()
+	} else if failed {
 		statusCode = normaliseStatusCode(record.Fail.StatusCode)
 		errorMessage = capUsageStoredString(strings.TrimSpace(record.Fail.Body))
 		if statusCode > 0 {
@@ -300,22 +308,29 @@ func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record)
 		stats.Models = make(map[string]*modelStats)
 	}
 	requestMetadata := coreusage.MetadataFromContext(ctx)
+	providerCooldownGeneratedRaw := requestMetadata.ProviderCooldownGeneratedRaw
+	if !failed {
+		providerCooldownGeneratedRaw = 0
+	}
 	s.updateAPIStats(stats, modelName, RequestDetail{
-		Timestamp:          timestamp,
-		LatencyMs:          normaliseLatency(record.Latency),
-		Source:             record.Source,
-		AuthIndex:          capUsageStoredString(record.AuthIndex),
-		UpstreamModel:      upstreamModel,
-		UserAgent:          resolveUserAgent(ctx),
-		InputChars:         normaliseInputChars(resolveInputChars(ctx)),
-		StatusCode:         statusCode,
-		ErrorReason:        errorReason,
-		ErrorMessage:       errorMessage,
-		RequestCount:       requestMetadata.RequestCount,
-		RetryRound:         requestMetadata.RetryRound,
-		RoundDispatchIndex: requestMetadata.RoundDispatchIndex,
-		Tokens:             detail,
-		Failed:             failed,
+		Timestamp:                    timestamp,
+		LatencyMs:                    normaliseLatency(record.Latency),
+		Source:                       record.Source,
+		AuthIndex:                    capUsageStoredString(record.AuthIndex),
+		UpstreamModel:                upstreamModel,
+		UserAgent:                    resolveUserAgent(ctx),
+		InputChars:                   normaliseInputChars(resolveInputChars(ctx)),
+		StatusCode:                   statusCode,
+		ErrorReason:                  errorReason,
+		ErrorMessage:                 errorMessage,
+		RequestCount:                 requestMetadata.RequestCount,
+		RetryRound:                   requestMetadata.RetryRound,
+		RoundDispatchIndex:           requestMetadata.RoundDispatchIndex,
+		ParallelEligible:             requestMetadata.ParallelEligible,
+		ProviderCooldownRemaining:    requestMetadata.ProviderCooldownRemaining,
+		ProviderCooldownGeneratedRaw: providerCooldownGeneratedRaw,
+		Tokens:                       detail,
+		Failed:                       failed,
 	}, timestamp)
 	if userAgent := capUsageStoredString(resolveUserAgent(ctx)); userAgent != "" {
 		addBoundedUsageSetValue(s.userAgents, userAgent, maxUsageUserAgents)
@@ -497,6 +512,12 @@ func normaliseRequestDetail(detail RequestDetail) RequestDetail {
 	detail.StatusCode = normaliseStatusCode(detail.StatusCode)
 	if detail.LatencyMs < 0 {
 		detail.LatencyMs = 0
+	}
+	if detail.ProviderCooldownRemaining < 0 {
+		detail.ProviderCooldownRemaining = 0
+	}
+	if detail.ProviderCooldownGeneratedRaw < 0 || math.IsNaN(detail.ProviderCooldownGeneratedRaw) || math.IsInf(detail.ProviderCooldownGeneratedRaw, 0) {
+		detail.ProviderCooldownGeneratedRaw = 0
 	}
 	detail.Tokens = normaliseTokenStats(detail.Tokens)
 	return detail

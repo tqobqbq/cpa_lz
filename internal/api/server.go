@@ -348,6 +348,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	s.applyAccessConfig(nil, cfg)
 	if authManager != nil {
 		authManager.SetRetryConfig(cfg.RequestRetry, time.Duration(cfg.MaxRetryInterval)*time.Second, cfg.MaxRetryCredentials)
+		authManager.SetErrorControlConfig(cfg.ErrorControl)
 	}
 	managementasset.SetCurrentConfig(cfg)
 	auth.SetQuotaCooldownDisabled(cfg.DisableCooling)
@@ -770,6 +771,12 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/max-retry-interval", s.mgmt.GetMaxRetryInterval)
 		mgmt.PUT("/max-retry-interval", s.mgmt.PutMaxRetryInterval)
 		mgmt.PATCH("/max-retry-interval", s.mgmt.PutMaxRetryInterval)
+		mgmt.GET("/error-control", s.mgmt.GetErrorControl)
+		mgmt.PUT("/error-control", s.mgmt.PutErrorControl)
+		mgmt.PATCH("/error-control", s.mgmt.PutErrorControl)
+		mgmt.GET("/provider-cooldown", s.mgmt.GetProviderCooldown)
+		mgmt.PUT("/provider-cooldown", s.mgmt.PutProviderCooldown)
+		mgmt.PATCH("/provider-cooldown", s.mgmt.PutProviderCooldown)
 
 		mgmt.GET("/force-model-prefix", s.mgmt.GetForceModelPrefix)
 		mgmt.PUT("/force-model-prefix", s.mgmt.PutForceModelPrefix)
@@ -1732,6 +1739,7 @@ func (s *Server) UpdateClients(cfg *config.Config) {
 
 	if s.handlers != nil && s.handlers.AuthManager != nil {
 		s.handlers.AuthManager.SetRetryConfig(cfg.RequestRetry, time.Duration(cfg.MaxRetryInterval)*time.Second, cfg.MaxRetryCredentials)
+		s.handlers.AuthManager.SetErrorControlConfig(cfg.ErrorControl)
 	}
 
 	// Update log level dynamically when debug flag changes

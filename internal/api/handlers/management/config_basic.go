@@ -296,6 +296,44 @@ func (h *Handler) PutMaxRetryInterval(c *gin.Context) {
 	h.updateIntField(c, func(v int) { h.cfg.MaxRetryInterval = v })
 }
 
+// Error control
+func (h *Handler) GetErrorControl(c *gin.Context) {
+	c.JSON(200, gin.H{"error-control": h.cfg.ErrorControl})
+}
+func (h *Handler) PutErrorControl(c *gin.Context) {
+	var body struct {
+		Value *config.ErrorControlConfig `json:"value"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || body.Value == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.cfg.ErrorControl = *body.Value
+	h.cfg.SanitizeErrorControl()
+	h.persistLocked(c)
+}
+
+// Provider cooldown
+func (h *Handler) GetProviderCooldown(c *gin.Context) {
+	c.JSON(200, gin.H{"provider-cooldown": h.cfg.ProviderCooldown})
+}
+func (h *Handler) PutProviderCooldown(c *gin.Context) {
+	var body struct {
+		Value *config.ProviderCooldownConfig `json:"value"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || body.Value == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.cfg.ProviderCooldown = *body.Value
+	h.cfg.SanitizeProviderCooldown()
+	h.persistLocked(c)
+}
+
 // CodexRemoveEmptyInputName
 func (h *Handler) GetCodexRemoveEmptyInputName(c *gin.Context) {
 	c.JSON(200, gin.H{"codex-remove-empty-input-name": h.cfg.CodexRemoveEmptyInputName})
@@ -319,6 +357,8 @@ func normalizeRoutingStrategy(strategy string) (string, bool) {
 		return "round-robin", true
 	case "fill-first":
 		return "fill-first", true
+	case "last-success":
+		return "last-success", true
 	default:
 		return "", false
 	}

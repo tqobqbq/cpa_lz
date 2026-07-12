@@ -39,6 +39,9 @@ func DefaultBoolPtr(v bool) *bool { return &v }
 // DefaultIntPtr returns a pointer to the provided integer value.
 func DefaultIntPtr(v int) *int { return &v }
 
+// DefaultFloatPtr returns a pointer to the provided float value.
+func DefaultFloatPtr(v float64) *float64 { return &v }
+
 // EffectiveBool returns the configured bool or the provided default when unset.
 func EffectiveBool(value *bool, defaultValue bool) bool {
 	if value == nil {
@@ -137,6 +140,12 @@ type Config struct {
 	MaxRetryCredentials int `yaml:"max-retry-credentials" json:"max-retry-credentials"`
 	// MaxRetryInterval defines the maximum wait time in seconds before retrying a cooled-down credential.
 	MaxRetryInterval int `yaml:"max-retry-interval" json:"max-retry-interval"`
+
+	// ErrorControl stores whole-request retry-round policies for upstream failures.
+	ErrorControl ErrorControlConfig `yaml:"error-control,omitempty" json:"error-control,omitempty"`
+
+	// ProviderCooldown stores count-based provider failure cooldown settings.
+	ProviderCooldown ProviderCooldownConfig `yaml:"provider-cooldown,omitempty" json:"provider-cooldown,omitempty"`
 
 	// QuotaExceeded defines the behavior when a quota is exceeded.
 	QuotaExceeded QuotaExceeded `yaml:"quota-exceeded" json:"quota-exceeded"`
@@ -366,11 +375,65 @@ type QuotaExceeded struct {
 	AntigravityCredits bool `yaml:"antigravity-credits" json:"antigravity-credits"`
 }
 
+// ErrorControlConfig stores retry controls for upstream provider failures.
+type ErrorControlConfig struct {
+	// Default applies when no provider or credential override is configured.
+	Default ErrorControlPolicy `yaml:"default,omitempty" json:"default,omitempty"`
+
+	// Providers stores per-provider retry policies keyed by provider name.
+	Providers map[string]ErrorControlPolicy `yaml:"providers,omitempty" json:"providers,omitempty"`
+}
+
+// ErrorControlPolicy controls whole-request retry rounds for one provider/auth scope.
+type ErrorControlPolicy struct {
+	// RetryRounds is the number of full candidate-set rounds for one request.
+	RetryRounds *int `yaml:"retry-rounds,omitempty" json:"retry-rounds,omitempty"`
+
+	// RoundBackoffBase is the initial backoff duration in seconds between outer retry rounds.
+	RoundBackoffBase *float64 `yaml:"round-backoff-base,omitempty" json:"round-backoff-base,omitempty"`
+
+	// RoundBackoffExponent is the multiplier applied to the backoff on each successive round.
+	RoundBackoffExponent *float64 `yaml:"round-backoff-exponent,omitempty" json:"round-backoff-exponent,omitempty"`
+
+	// RoundBackoffMax is the maximum backoff duration in seconds between outer retry rounds.
+	RoundBackoffMax *float64 `yaml:"round-backoff-max,omitempty" json:"round-backoff-max,omitempty"`
+}
+
+const (
+	// DefaultProviderCooldownStart is the first failure cooldown count.
+	DefaultProviderCooldownStart = 1
+	// DefaultProviderCooldownExponent is the failure multiplier.
+	DefaultProviderCooldownExponent = 1.2
+	// DefaultProviderCooldownMax is the maximum cooldown count.
+	DefaultProviderCooldownMax = 10
+)
+
+// ProviderCooldownConfig stores count-based provider failure cooldown settings.
+type ProviderCooldownConfig struct {
+	// Start is the cooldown count assigned after the first failure.
+	Start *int `yaml:"start,omitempty" json:"start,omitempty"`
+
+	// Exponent multiplies the previously generated cooldown count after each later failure.
+	Exponent *float64 `yaml:"exponent,omitempty" json:"exponent,omitempty"`
+
+	// Max caps the computed cooldown count.
+	Max *int `yaml:"max,omitempty" json:"max,omitempty"`
+}
+
 // RoutingConfig configures how credentials are selected for requests.
 type RoutingConfig struct {
 	// Strategy selects the credential selection strategy.
-	// Supported values: "round-robin" (default), "fill-first".
+	// Supported values: "round-robin" (default), "fill-first", "last-success".
 	Strategy string `yaml:"strategy,omitempty" json:"strategy,omitempty"`
+
+	// ParallelRequestsEnabled allows eligible same-priority credentials to be dispatched concurrently.
+	ParallelRequestsEnabled bool `yaml:"parallel-requests-enabled,omitempty" json:"parallel-requests-enabled,omitempty"`
+
+	// ParallelRequestsMinRound is the minimum 1-based retry round before parallel dispatch can start.
+	ParallelRequestsMinRound int `yaml:"parallel-requests-min-round,omitempty" json:"parallel-requests-min-round,omitempty"`
+
+	// ParallelRequestsMinFailures is the minimum consecutive failure count before a credential is parallel eligible.
+	ParallelRequestsMinFailures int `yaml:"parallel-requests-min-failures,omitempty" json:"parallel-requests-min-failures,omitempty"`
 
 	// SessionAffinity enables universal session-sticky routing for all clients.
 	// Session IDs are extracted from multiple sources:
@@ -580,6 +643,18 @@ type ClaudeKey struct {
 	// DisableCooling disables auth/model cooldown scheduling for this credential when true.
 	DisableCooling bool `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
 
+	// BackoffMode controls how cooldown/backoff applies to this credential.
+	BackoffMode string `yaml:"backoff-mode,omitempty" json:"backoff-mode,omitempty"`
+
+	// RequestRetry overrides the retry count when BackoffMode is custom.
+	RequestRetry *int `yaml:"request-retry,omitempty" json:"request-retry,omitempty"`
+
+	// ErrorControl overrides provider retry behavior for this credential.
+	ErrorControl ErrorControlPolicy `yaml:"error-control,omitempty" json:"error-control,omitempty"`
+
+	// Cooldown overrides count-based failure cooldown for this credential.
+	Cooldown ProviderCooldownConfig `yaml:"cooldown,omitempty" json:"cooldown,omitempty"`
+
 	// Cloak configures request cloaking for non-Claude-Code clients.
 	Cloak *CloakConfig `yaml:"cloak,omitempty" json:"cloak,omitempty"`
 
@@ -646,6 +721,18 @@ type CodexKey struct {
 
 	// DisableCooling disables auth/model cooldown scheduling for this credential when true.
 	DisableCooling bool `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
+
+	// BackoffMode controls how cooldown/backoff applies to this credential.
+	BackoffMode string `yaml:"backoff-mode,omitempty" json:"backoff-mode,omitempty"`
+
+	// RequestRetry overrides the retry count when BackoffMode is custom.
+	RequestRetry *int `yaml:"request-retry,omitempty" json:"request-retry,omitempty"`
+
+	// ErrorControl overrides provider retry behavior for this credential.
+	ErrorControl ErrorControlPolicy `yaml:"error-control,omitempty" json:"error-control,omitempty"`
+
+	// Cooldown overrides count-based failure cooldown for this credential.
+	Cooldown ProviderCooldownConfig `yaml:"cooldown,omitempty" json:"cooldown,omitempty"`
 }
 
 func (k CodexKey) GetAPIKey() string  { return k.APIKey }
@@ -697,6 +784,18 @@ type GeminiKey struct {
 
 	// DisableCooling disables auth/model cooldown scheduling for this credential when true.
 	DisableCooling bool `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
+
+	// BackoffMode controls how cooldown/backoff applies to this credential.
+	BackoffMode string `yaml:"backoff-mode,omitempty" json:"backoff-mode,omitempty"`
+
+	// RequestRetry overrides the retry count when BackoffMode is custom.
+	RequestRetry *int `yaml:"request-retry,omitempty" json:"request-retry,omitempty"`
+
+	// ErrorControl overrides provider retry behavior for this credential.
+	ErrorControl ErrorControlPolicy `yaml:"error-control,omitempty" json:"error-control,omitempty"`
+
+	// Cooldown overrides count-based failure cooldown for this credential.
+	Cooldown ProviderCooldownConfig `yaml:"cooldown,omitempty" json:"cooldown,omitempty"`
 }
 
 func (k GeminiKey) GetAPIKey() string  { return k.APIKey }
@@ -748,6 +847,18 @@ type OpenAICompatibility struct {
 
 	// DisableCooling disables auth/model cooldown scheduling for this provider when true.
 	DisableCooling bool `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
+
+	// BackoffMode controls how cooldown/backoff applies to this provider.
+	BackoffMode string `yaml:"backoff-mode,omitempty" json:"backoff-mode,omitempty"`
+
+	// RequestRetry overrides the retry count when BackoffMode is custom.
+	RequestRetry *int `yaml:"request-retry,omitempty" json:"request-retry,omitempty"`
+
+	// ErrorControl overrides provider retry behavior for this provider.
+	ErrorControl ErrorControlPolicy `yaml:"error-control,omitempty" json:"error-control,omitempty"`
+
+	// Cooldown overrides count-based failure cooldown for this provider.
+	Cooldown ProviderCooldownConfig `yaml:"cooldown,omitempty" json:"cooldown,omitempty"`
 }
 
 // OpenAICompatibilityAPIKey represents an API key configuration with optional proxy setting.
@@ -892,6 +1003,10 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 		cfg.MaxRetryCredentials = 0
 	}
 
+	// Normalize retry-round and count-based cooldown policies.
+	cfg.SanitizeErrorControl()
+	cfg.SanitizeProviderCooldown()
+
 	cfg.NormalizePluginsConfig()
 
 	// Sanitize Gemini API key configuration and migrate legacy entries.
@@ -952,6 +1067,117 @@ func (cfg *Config) NormalizePluginsConfig() {
 	if cfg.Plugins.Configs == nil {
 		cfg.Plugins.Configs = map[string]PluginInstanceConfig{}
 	}
+}
+
+// SanitizeErrorControl normalizes retry control policy values.
+func (cfg *Config) SanitizeErrorControl() {
+	if cfg == nil {
+		return
+	}
+	cfg.ErrorControl.Default = sanitizeErrorControlPolicy(cfg.ErrorControl.Default)
+	if len(cfg.ErrorControl.Providers) > 0 {
+		normalized := make(map[string]ErrorControlPolicy, len(cfg.ErrorControl.Providers))
+		for provider, policy := range cfg.ErrorControl.Providers {
+			key := strings.ToLower(strings.TrimSpace(provider))
+			if key == "" {
+				continue
+			}
+			normalized[key] = sanitizeErrorControlPolicy(policy)
+		}
+		cfg.ErrorControl.Providers = normalized
+	}
+	for i := range cfg.GeminiKey {
+		cfg.GeminiKey[i].ErrorControl = sanitizeErrorControlPolicy(cfg.GeminiKey[i].ErrorControl)
+	}
+	for i := range cfg.ClaudeKey {
+		cfg.ClaudeKey[i].ErrorControl = sanitizeErrorControlPolicy(cfg.ClaudeKey[i].ErrorControl)
+	}
+	for i := range cfg.CodexKey {
+		cfg.CodexKey[i].ErrorControl = sanitizeErrorControlPolicy(cfg.CodexKey[i].ErrorControl)
+	}
+	for i := range cfg.OpenAICompatibility {
+		cfg.OpenAICompatibility[i].ErrorControl = sanitizeErrorControlPolicy(cfg.OpenAICompatibility[i].ErrorControl)
+	}
+}
+
+func sanitizeErrorControlPolicy(policy ErrorControlPolicy) ErrorControlPolicy {
+	if policy.RetryRounds != nil {
+		value := *policy.RetryRounds
+		if value < 1 {
+			value = 1
+		}
+		policy.RetryRounds = DefaultIntPtr(value)
+	}
+	if policy.RoundBackoffBase != nil {
+		value := *policy.RoundBackoffBase
+		if value <= 0 {
+			value = 1
+		}
+		policy.RoundBackoffBase = DefaultFloatPtr(value)
+	}
+	if policy.RoundBackoffExponent != nil {
+		value := *policy.RoundBackoffExponent
+		if value <= 0 {
+			value = 2
+		}
+		policy.RoundBackoffExponent = DefaultFloatPtr(value)
+	}
+	if policy.RoundBackoffMax != nil {
+		value := *policy.RoundBackoffMax
+		if value <= 0 {
+			value = 60
+		}
+		policy.RoundBackoffMax = DefaultFloatPtr(value)
+	}
+	return policy
+}
+
+// SanitizeProviderCooldown normalizes count-based provider cooldown values.
+func (cfg *Config) SanitizeProviderCooldown() {
+	if cfg == nil {
+		return
+	}
+	cfg.ProviderCooldown = sanitizeProviderCooldownConfig(cfg.ProviderCooldown)
+	for i := range cfg.GeminiKey {
+		cfg.GeminiKey[i].Cooldown = sanitizeProviderCooldownConfig(cfg.GeminiKey[i].Cooldown)
+	}
+	for i := range cfg.ClaudeKey {
+		cfg.ClaudeKey[i].Cooldown = sanitizeProviderCooldownConfig(cfg.ClaudeKey[i].Cooldown)
+	}
+	for i := range cfg.CodexKey {
+		cfg.CodexKey[i].Cooldown = sanitizeProviderCooldownConfig(cfg.CodexKey[i].Cooldown)
+	}
+	for i := range cfg.OpenAICompatibility {
+		cfg.OpenAICompatibility[i].Cooldown = sanitizeProviderCooldownConfig(cfg.OpenAICompatibility[i].Cooldown)
+	}
+	for i := range cfg.VertexCompatAPIKey {
+		cfg.VertexCompatAPIKey[i].Cooldown = sanitizeProviderCooldownConfig(cfg.VertexCompatAPIKey[i].Cooldown)
+	}
+}
+
+func sanitizeProviderCooldownConfig(policy ProviderCooldownConfig) ProviderCooldownConfig {
+	if policy.Start != nil {
+		value := *policy.Start
+		if value < 1 {
+			value = DefaultProviderCooldownStart
+		}
+		policy.Start = DefaultIntPtr(value)
+	}
+	if policy.Exponent != nil {
+		value := *policy.Exponent
+		if value <= 0 {
+			value = DefaultProviderCooldownExponent
+		}
+		policy.Exponent = DefaultFloatPtr(value)
+	}
+	if policy.Max != nil {
+		value := *policy.Max
+		if value < 1 {
+			value = DefaultProviderCooldownMax
+		}
+		policy.Max = DefaultIntPtr(value)
+	}
+	return policy
 }
 
 // SanitizePayloadRules validates raw JSON payload rule params and drops invalid rules.

@@ -337,6 +337,10 @@ func TestManager_MaxRetryCredentials_LimitsCrossCredentialRetries(t *testing.T) 
 
 func TestManager_ModelSupportBadRequest_FallsBackAndSuspendsAuth(t *testing.T) {
 	m := NewManager(nil, nil, nil)
+	// Pin fill-first ordering so aa-bad-auth is always dispatched before
+	// bb-good-auth; the default round-robin strategy shuffles same-priority
+	// candidates per request.
+	m.SetConfig(&internalconfig.Config{Routing: internalconfig.RoutingConfig{Strategy: "fill-first"}})
 	executor := &authFallbackExecutor{
 		id: "claude",
 		executeErrors: map[string]error{
@@ -407,6 +411,10 @@ func TestManager_ModelSupportBadRequest_FallsBackAndSuspendsAuth(t *testing.T) {
 
 func TestManagerExecuteStream_ModelSupportBadRequestFallsBackAndSuspendsAuth(t *testing.T) {
 	m := NewManager(nil, nil, nil)
+	// Pin fill-first ordering so aa-bad-auth is always dispatched before
+	// bb-good-auth; the default round-robin strategy shuffles same-priority
+	// candidates per request.
+	m.SetConfig(&internalconfig.Config{Routing: internalconfig.RoutingConfig{Strategy: "fill-first"}})
 	executor := &authFallbackExecutor{
 		id: "claude",
 		streamFirstErrors: map[string]error{
@@ -908,6 +916,17 @@ func TestManager_Execute_DisableCooling_RetriesAfter429RetryAfter(t *testing.T) 
 
 	m := NewManager(nil, nil, nil)
 	m.SetRetryConfig(3, 100*time.Millisecond, 0)
+	// Whole-request retries are governed by error-control retry rounds: with
+	// disable_cooling the 429 keeps the credential eligible, so four rounds
+	// re-dispatch the same auth four times before the request fails.
+	m.SetErrorControlConfig(internalconfig.ErrorControlConfig{
+		Default: internalconfig.ErrorControlPolicy{
+			RetryRounds:          internalconfig.DefaultIntPtr(4),
+			RoundBackoffBase:     internalconfig.DefaultFloatPtr(0.001),
+			RoundBackoffExponent: internalconfig.DefaultFloatPtr(1),
+			RoundBackoffMax:      internalconfig.DefaultFloatPtr(0.001),
+		},
+	})
 
 	executor := &authFallbackExecutor{
 		id: "claude",
@@ -992,6 +1011,9 @@ func TestManager_MarkResult_RequestScopedNotFoundDoesNotCooldownAuth(t *testing.
 
 func TestManager_RequestScopedNotFoundStopsRetryWithoutSuspendingAuth(t *testing.T) {
 	m := NewManager(nil, nil, nil)
+	// Pin fill-first ordering so aa-bad-auth is always dispatched first; the
+	// request-scoped 404 must then abort the request before bb-good-auth runs.
+	m.SetConfig(&internalconfig.Config{Routing: internalconfig.RoutingConfig{Strategy: "fill-first"}})
 	executor := &authFallbackExecutor{
 		id: "openai",
 		executeErrors: map[string]error{

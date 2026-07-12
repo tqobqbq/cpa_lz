@@ -127,6 +127,16 @@ func authPriority(auth *Auth) int {
 	return parsed
 }
 
+func authPriorityTier(auth *Auth) priorityTier {
+	if auth == nil {
+		return priorityTier{entry: 0}
+	}
+	return priorityTier{
+		group: auth.GroupPriority(),
+		entry: authPriority(auth),
+	}
+}
+
 func canonicalModelKey(model string) string {
 	model = strings.TrimSpace(model)
 	if model == "" {

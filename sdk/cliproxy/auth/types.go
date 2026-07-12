@@ -93,6 +93,10 @@ type Auth struct {
 	// Runtime carries non-serialisable data used during execution (in-memory only).
 	Runtime any `json:"-"`
 
+	// RuntimeGeneration increments when an execution-affecting config change lands,
+	// letting MarkResult drop stale results from superseded auth revisions.
+	RuntimeGeneration uint64 `json:"-"`
+
 	Success int64 `json:"-"`
 	Failed  int64 `json:"-"`
 
@@ -427,12 +431,87 @@ func (a *Auth) ProxyInfo() string {
 	return "via proxy"
 }
 
+// GroupPriority returns the credential's group-level priority (default 10).
+func (a *Auth) GroupPriority() int {
+	if a == nil || a.Attributes == nil {
+		return 10
+	}
+	raw := strings.TrimSpace(a.Attributes["group_priority"])
+	if raw == "" {
+		return 10
+	}
+	parsed, err := strconv.Atoi(raw)
+	if err != nil {
+		return 10
+	}
+	return parsed
+}
+
+// GroupEnabled reports whether the credential's group allows scheduling (default true).
+func (a *Auth) GroupEnabled() bool {
+	if a == nil || a.Attributes == nil {
+		return true
+	}
+	raw := strings.TrimSpace(a.Attributes["group_enabled"])
+	if raw == "" {
+		return true
+	}
+	parsed, ok := parseBoolAny(raw)
+	if !ok {
+		return true
+	}
+	return parsed
+}
+
+// priorityTier orders candidates by group priority first, then entry priority.
+type priorityTier struct {
+	group int
+	entry int
+}
+
+func (t priorityTier) betterThan(other priorityTier) bool {
+	if t.group != other.group {
+		return t.group > other.group
+	}
+	return t.entry > other.entry
+}
+
+// BackoffModeOverride returns the normalized per-auth backoff mode override.
+func (a *Auth) BackoffModeOverride() string {
+	if a == nil || a.Metadata == nil {
+		return ""
+	}
+	for _, key := range []string{"backoff_mode", "backoff-mode"} {
+		raw, ok := a.Metadata[key]
+		if !ok {
+			continue
+		}
+		value, okString := raw.(string)
+		if !okString {
+			continue
+		}
+		switch strings.ToLower(strings.TrimSpace(value)) {
+		case "off":
+			return "off"
+		case "custom":
+			return "custom"
+		default:
+			return "default"
+		}
+	}
+	return ""
+}
+
 // DisableCoolingOverride returns the auth scoped disable_cooling override when present.
 // The value is read from metadata key "disable_cooling" (or legacy "disable-cooling").
+// A backoff mode of "off" implies cooling is disabled.
 //
 // NOTE: This override is intentionally "true-only". When the metadata value is false, it is treated
 // as "not set" so the global disable-cooling flag can still take effect.
 func (a *Auth) DisableCoolingOverride() (bool, bool) {
+	if mode := a.BackoffModeOverride(); mode == "off" {
+		return true, true
+	}
 	if a == nil || a.Metadata == nil {
 		return false, false
 	}
@@ -474,7 +553,14 @@ func (a *Auth) ToolPrefixDisabled() bool {
 
 // RequestRetryOverride returns the auth-file scoped request_retry override when present.
 // The value is read from metadata key "request_retry" (or legacy "request-retry").
+// Backoff mode "off" forces 0 retries; "default" ignores the per-auth value.
 func (a *Auth) RequestRetryOverride() (int, bool) {
+	switch a.BackoffModeOverride() {
+	case "off":
+		return 0, true
+	case "default":
+		return 0, false
+	}
 	if a == nil || a.Metadata == nil {
 		return 0, false
 	}
@@ -495,6 +581,106 @@ func (a *Auth) RequestRetryOverride() (int, bool) {
 		}
 	}
 	return 0, false
+}
+
+// RetryRoundsOverride returns the auth-scoped whole-request retry rounds override when present.
+func (a *Auth) RetryRoundsOverride() (int, bool) {
+	return positiveIntMetadataOverride(a, "retry_rounds", "retry-rounds")
+}
+
+// RoundBackoffBaseOverride returns the auth-scoped round backoff base override in seconds.
+func (a *Auth) RoundBackoffBaseOverride() (float64, bool) {
+	return positiveFloatMetadataOverride(a, "round_backoff_base", "round-backoff-base")
+}
+
+// RoundBackoffExponentOverride returns the auth-scoped round backoff exponent override.
+func (a *Auth) RoundBackoffExponentOverride() (float64, bool) {
+	return positiveFloatMetadataOverride(a, "round_backoff_exponent", "round-backoff-exponent")
+}
+
+// RoundBackoffMaxOverride returns the auth-scoped round backoff max override in seconds.
+func (a *Auth) RoundBackoffMaxOverride() (float64, bool) {
+	return positiveFloatMetadataOverride(a, "round_backoff_max", "round-backoff-max")
+}
+
+// ProviderCooldownStartOverride returns the auth-scoped failure cooldown start override.
+func (a *Auth) ProviderCooldownStartOverride() (int, bool) {
+	return positiveIntMetadataOverride(a, "cooldown_start", "cooldown-start")
+}
+
+// ProviderCooldownExponentOverride returns the auth-scoped failure cooldown exponent override.
+func (a *Auth) ProviderCooldownExponentOverride() (float64, bool) {
+	return positiveFloatMetadataOverride(a, "cooldown_exponent", "cooldown-exponent")
+}
+
+// ProviderCooldownMaxOverride returns the auth-scoped failure cooldown max override.
+func (a *Auth) ProviderCooldownMaxOverride() (int, bool) {
+	return positiveIntMetadataOverride(a, "cooldown_max", "cooldown-max")
+}
+
+func positiveIntMetadataOverride(a *Auth, keys ...string) (int, bool) {
+	if a == nil || a.Metadata == nil {
+		return 0, false
+	}
+	for _, key := range keys {
+		if val, ok := a.Metadata[key]; ok {
+			if parsed, okParse := parseIntAny(val); okParse {
+				if parsed < 1 {
+					parsed = 1
+				}
+				return parsed, true
+			}
+		}
+	}
+	return 0, false
+}
+
+func positiveFloatMetadataOverride(a *Auth, keys ...string) (float64, bool) {
+	if a == nil || a.Metadata == nil {
+		return 0, false
+	}
+	for _, key := range keys {
+		if val, ok := a.Metadata[key]; ok {
+			if parsed, okParse := parseFloatAny(val); okParse {
+				if parsed <= 0 {
+					continue
+				}
+				return parsed, true
+			}
+		}
+	}
+	return 0, false
+}
+
+func parseFloatAny(val any) (float64, bool) {
+	switch typed := val.(type) {
+	case float64:
+		return typed, true
+	case float32:
+		return float64(typed), true
+	case int:
+		return float64(typed), true
+	case int64:
+		return float64(typed), true
+	case json.Number:
+		parsed, err := typed.Float64()
+		if err != nil {
+			return 0, false
+		}
+		return parsed, true
+	case string:
+		trimmed := strings.TrimSpace(typed)
+		if trimmed == "" {
+			return 0, false
+		}
+		parsed, err := strconv.ParseFloat(trimmed, 64)
+		if err != nil {
+			return 0, false
+		}
+		return parsed, true
+	default:
+		return 0, false
+	}
 }
 
 func parseBoolAny(val any) (bool, bool) {

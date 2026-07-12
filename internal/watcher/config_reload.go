@@ -132,7 +132,14 @@ func (w *Watcher) reloadConfig() bool {
 	}
 
 	authDirChanged := oldConfig == nil || oldConfig.AuthDir != newConfig.AuthDir
-	retryConfigChanged := oldConfig != nil && (oldConfig.RequestRetry != newConfig.RequestRetry || oldConfig.MaxRetryInterval != newConfig.MaxRetryInterval || oldConfig.MaxRetryCredentials != newConfig.MaxRetryCredentials)
+	retryConfigChanged := oldConfig != nil && (oldConfig.RequestRetry != newConfig.RequestRetry ||
+		oldConfig.MaxRetryInterval != newConfig.MaxRetryInterval ||
+		oldConfig.MaxRetryCredentials != newConfig.MaxRetryCredentials ||
+		!reflect.DeepEqual(oldConfig.ErrorControl, newConfig.ErrorControl) ||
+		!reflect.DeepEqual(oldConfig.ProviderCooldown, newConfig.ProviderCooldown) ||
+		oldConfig.Routing.ParallelRequestsEnabled != newConfig.Routing.ParallelRequestsEnabled ||
+		oldConfig.Routing.ParallelRequestsMinRound != newConfig.Routing.ParallelRequestsMinRound ||
+		oldConfig.Routing.ParallelRequestsMinFailures != newConfig.Routing.ParallelRequestsMinFailures)
 	forceAuthRefresh := oldConfig != nil && (oldConfig.ForceModelPrefix != newConfig.ForceModelPrefix || !reflect.DeepEqual(oldConfig.OAuthModelAlias, newConfig.OAuthModelAlias) || retryConfigChanged)
 
 	if authDirChanged {
