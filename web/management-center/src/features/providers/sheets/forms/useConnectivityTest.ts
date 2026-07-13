@@ -34,14 +34,18 @@ const requestFailureMessage = (err: unknown, messages: ConnectivityErrorMessages
   return isTimeout ? messages.timeout(DEFAULT_TIMEOUT_MS / 1000) : raw || messages.requestFailed;
 };
 
-const pickModel = (testModel: string | undefined, models: ModelEntryInput[]): string => {
+const pickModel = (
+  testModel: string | undefined,
+  models: ModelEntryInput[],
+  defaultModel?: string
+): string => {
   const trimmed = (testModel ?? '').trim();
   if (trimmed) return trimmed;
   for (const m of models) {
     const name = (m.name ?? '').trim();
     if (name) return name;
   }
-  return '';
+  return (defaultModel ?? '').trim();
 };
 
 const resolveBearerToken = (headers: Record<string, string>): string => {
@@ -61,6 +65,8 @@ export interface UseConnectivityTestArgs {
   apiKey?: string;
   fallbackApiKey?: string;
   authIndex?: string;
+  /** Brand-level fallback model from config default-test-models. */
+  defaultTestModel?: string;
 }
 
 export interface ConnectivityErrorMessages {
@@ -99,6 +105,7 @@ export function useConnectivityTest(
     apiKey,
     fallbackApiKey,
     authIndex,
+    defaultTestModel,
   } = args;
 
   const entriesCount = apiKeyEntries?.length ?? 0;
@@ -208,7 +215,7 @@ export function useConnectivityTest(
         });
         return false;
       }
-      const model = pickModel(testModel, models);
+      const model = pickModel(testModel, models, defaultTestModel);
       if (!model) {
         updateOpenaiStatus(idx, {
           state: 'error',
@@ -267,6 +274,7 @@ export function useConnectivityTest(
       authIndex,
       baseUrl,
       brand,
+      defaultTestModel,
       formHeaders,
       messages,
       models,
@@ -297,7 +305,7 @@ export function useConnectivityTest(
       return;
     }
 
-    const model = pickModel(testModel, models);
+    const model = pickModel(testModel, models, defaultTestModel);
     if (!model) {
       setCodexStatus({ state: 'error', message: messages.modelRequired });
       return;
@@ -356,12 +364,12 @@ export function useConnectivityTest(
     } finally {
       setInFlight((n) => n - 1);
     }
-  }, [apiKey, authIndex, baseUrl, brand, fallbackApiKey, formHeaders, messages, models, testModel]);
+  }, [apiKey, authIndex, baseUrl, brand, defaultTestModel, fallbackApiKey, formHeaders, messages, models, testModel]);
 
   const runGemini = useCallback(async (): Promise<void> => {
     if (brand !== 'gemini') return;
 
-    const model = pickModel(testModel, models);
+    const model = pickModel(testModel, models, defaultTestModel);
     if (!model) {
       setGeminiStatus({ state: 'error', message: messages.modelRequired });
       return;
@@ -425,7 +433,7 @@ export function useConnectivityTest(
     } finally {
       setInFlight((n) => n - 1);
     }
-  }, [apiKey, authIndex, baseUrl, brand, fallbackApiKey, formHeaders, messages, models, testModel]);
+  }, [apiKey, authIndex, baseUrl, brand, defaultTestModel, fallbackApiKey, formHeaders, messages, models, testModel]);
 
   const runClaude = useCallback(async (): Promise<void> => {
     if (brand !== 'claude' && brand !== 'claudeApi') return;
@@ -435,7 +443,7 @@ export function useConnectivityTest(
       setClaudeStatus({ state: 'error', message: messages.endpointInvalid });
       return;
     }
-    const model = pickModel(testModel, models);
+    const model = pickModel(testModel, models, defaultTestModel);
     if (!model) {
       setClaudeStatus({ state: 'error', message: messages.modelRequired });
       return;
@@ -496,7 +504,7 @@ export function useConnectivityTest(
     } finally {
       setInFlight((n) => n - 1);
     }
-  }, [apiKey, authIndex, baseUrl, brand, fallbackApiKey, formHeaders, messages, models, testModel]);
+  }, [apiKey, authIndex, baseUrl, brand, defaultTestModel, fallbackApiKey, formHeaders, messages, models, testModel]);
 
   return {
     openaiStatuses,

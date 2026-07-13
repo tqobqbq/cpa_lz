@@ -36,6 +36,21 @@
   max-width: 220px;
 }
 
+.indexBadge {
+  display: inline-block;
+  min-width: 18px;
+  margin-right: 6px;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--accent-bg) 70%, transparent);
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-family: $font-mono;
+  text-align: center;
+  line-height: 18px;
+  vertical-align: middle;
+}
+
 .baseUrl {
   font-family: $font-mono;
   font-size: 12px;

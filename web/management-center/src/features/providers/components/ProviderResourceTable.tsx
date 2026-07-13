@@ -170,14 +170,20 @@ export function ProviderResourceTable({
       const extra = r.apiKeyEntryCount > 1 ? ` · +${r.apiKeyEntryCount - 1}` : '';
       return (
         <div className={styles.primaryCell}>
-          <span className={styles.primaryName}>{r.name ?? r.identifier}</span>
+          <span className={styles.primaryName}>
+            <span className={styles.indexBadge}>{r.originalIndex}</span>
+            {r.name ?? r.identifier}
+          </span>
           <span className={styles.primarySub}>{(r.apiKeyPreview ?? '—') + extra}</span>
         </div>
       );
     }
     return (
       <div className={styles.primaryCell}>
-        <span className={styles.primaryName}>{r.apiKeyPreview ?? '—'}</span>
+        <span className={styles.primaryName}>
+          <span className={styles.indexBadge}>{r.originalIndex}</span>
+          {r.apiKeyPreview ?? '—'}
+        </span>
         {r.authIndex ? <span className={styles.primarySub}>auth: {r.authIndex}</span> : null}
       </div>
     );

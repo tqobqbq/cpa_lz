@@ -7,7 +7,7 @@ import type {
   OpenAIProviderConfig,
   ProviderKeyConfig,
 } from '@/types';
-import type { Config, RoutingRuleConfig } from '@/types/config';
+import type { Config, DefaultTestModelsConfig, RoutingRuleConfig } from '@/types/config';
 import { buildHeaderObject } from '@/utils/headers';
 import { isRecord } from '@/utils/helpers';
 
@@ -113,6 +113,19 @@ const normalizeClaudeAuthMode = (value: unknown): ClaudeAuthMode | undefined => 
     return 'bearer';
   }
   return undefined;
+};
+
+const normalizeDefaultTestModels = (input: unknown): DefaultTestModelsConfig | undefined => {
+  if (!isRecord(input)) return undefined;
+  const codex = String(input.codex ?? '').trim();
+  const claude = String(input.claude ?? '').trim();
+  if (!codex && !claude) {
+    return undefined;
+  }
+  return {
+    ...(codex ? { codex } : {}),
+    ...(claude ? { claude } : {}),
+  };
 };
 
 const normalizeRoutingRules = (input: unknown): RoutingRuleConfig[] => {
@@ -416,6 +429,12 @@ export const normalizeConfigResponse = (raw: unknown): Config => {
   const routingRules = normalizeRoutingRules(isRecord(routing) ? routing.rules : undefined);
   if (routingRules.length > 0) {
     config.routingRules = routingRules;
+  }
+  const defaultTestModels = normalizeDefaultTestModels(
+    raw['default-test-models'] ?? raw.defaultTestModels
+  );
+  if (defaultTestModels) {
+    config.defaultTestModels = defaultTestModels;
   }
   const apiKeysRaw = raw['api-keys'];
   if (Array.isArray(apiKeysRaw)) {

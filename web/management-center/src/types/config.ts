@@ -28,6 +28,11 @@ export interface RoutingRuleConfig {
 }
 
 
+export interface DefaultTestModelsConfig {
+  codex?: string;
+  claude?: string;
+}
+
 export interface QuotaExceededConfig {
   switchProject?: boolean;
   switchPreviewModel?: boolean;
@@ -47,6 +52,7 @@ export interface Config {
   codexRemoveEmptyInputName?: boolean;
   routingStrategy?: string;
   routingRules?: RoutingRuleConfig[];
+  defaultTestModels?: DefaultTestModelsConfig;
   authFilesGroup?: AuthFilesGroupConfig;
   apiKeys?: string[];
   geminiApiKeys?: GeminiKeyConfig[];

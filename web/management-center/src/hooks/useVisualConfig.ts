@@ -1071,6 +1071,8 @@ function getNextDirtyFields(
       'codexRemoveEmptyInputName',
       'maxRetryCredentials',
       'maxRetryInterval',
+      'defaultTestModelCodex',
+      'defaultTestModelClaude',
       'wsAuth',
       'quotaSwitchProject',
       'quotaSwitchPreviewModel',
@@ -1288,6 +1290,12 @@ export function useVisualConfig() {
         requestRetry: String(parsed['request-retry'] ?? ''),
         maxRetryCredentials: String(parsed['max-retry-credentials'] ?? ''),
         maxRetryInterval: String(parsed['max-retry-interval'] ?? ''),
+        defaultTestModelCodex: String(
+          asRecord(parsed['default-test-models'])?.['codex'] ?? ''
+        ),
+        defaultTestModelClaude: String(
+          asRecord(parsed['default-test-models'])?.['claude'] ?? ''
+        ),
         disableCooling: Boolean(parsed['disable-cooling']),
         disableImageGeneration: parseDisableImageGenerationMode(parsed['disable-image-generation']),
         gptImage2BaseModel:
@@ -1496,6 +1504,16 @@ export function useVisualConfig() {
         setIntFromStringInDoc(doc, ['request-retry'], values.requestRetry);
         setIntFromStringInDoc(doc, ['max-retry-credentials'], values.maxRetryCredentials);
         setIntFromStringInDoc(doc, ['max-retry-interval'], values.maxRetryInterval);
+        if (
+          docHas(doc, ['default-test-models']) ||
+          values.defaultTestModelCodex.trim() ||
+          values.defaultTestModelClaude.trim()
+        ) {
+          ensureMapInDoc(doc, ['default-test-models']);
+          setStringInDoc(doc, ['default-test-models', 'codex'], values.defaultTestModelCodex);
+          setStringInDoc(doc, ['default-test-models', 'claude'], values.defaultTestModelClaude);
+          deleteIfMapEmpty(doc, ['default-test-models']);
+        }
         setBooleanInDoc(doc, ['disable-cooling'], values.disableCooling);
         setDisableImageGenerationInDoc(
           doc,

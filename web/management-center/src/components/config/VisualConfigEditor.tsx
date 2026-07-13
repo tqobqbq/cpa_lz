@@ -1216,6 +1216,24 @@ export function VisualConfigEditor({
                       error={maxRetryIntervalError}
                     />
                   </FieldAnchor>
+                  <FieldAnchor fieldId="defaultTestModelCodex">
+                    <Input
+                      label={t('config_management.visual.sections.network.default_test_model_codex')}
+                      placeholder="gpt-5-codex"
+                      value={values.defaultTestModelCodex}
+                      onChange={(e) => onChange({ defaultTestModelCodex: e.target.value })}
+                      disabled={disabled}
+                    />
+                  </FieldAnchor>
+                  <FieldAnchor fieldId="defaultTestModelClaude">
+                    <Input
+                      label={t('config_management.visual.sections.network.default_test_model_claude')}
+                      placeholder="claude-sonnet-4"
+                      value={values.defaultTestModelClaude}
+                      onChange={(e) => onChange({ defaultTestModelClaude: e.target.value })}
+                      disabled={disabled}
+                    />
+                  </FieldAnchor>
                   <FieldAnchor fieldId="authAutoRefreshWorkers">
                     <Input
                       label={t(

@@ -33,6 +33,7 @@ import { ModelDiscoveryPanel } from './ModelDiscoveryPanel';
 import styles from './sharedForm.module.scss';
 import { CLAUDE_API_BASE_URL } from '../../claudeApi';
 import { extractQuickImportFields } from '../../quickImport';
+import { useConfigStore } from '@/stores/useConfigStore';
 
 export interface BaseProviderFormHandle {
   submit: () => Promise<void>;
@@ -297,6 +298,13 @@ export function BaseProviderForm({
     [t]
   );
 
+  const configDefaultTestModels = useConfigStore((state) => state.config?.defaultTestModels);
+  const defaultTestModel = useMemo(() => {
+    if (brand === 'codex') return configDefaultTestModels?.codex ?? '';
+    if (brand === 'claude' || brand === 'claudeApi') return configDefaultTestModels?.claude ?? '';
+    return '';
+  }, [brand, configDefaultTestModels]);
+
   const connectivity = useConnectivityTest(
     {
       brand,
@@ -308,6 +316,7 @@ export function BaseProviderForm({
       apiKey: form.apiKey,
       fallbackApiKey,
       authIndex: fallbackAuthIndex,
+      defaultTestModel,
     },
     connectivityMessages
   );
@@ -345,7 +354,9 @@ export function BaseProviderForm({
     const firstName = names[0];
     const autoLabel = firstName
       ? t('providersPage.form.testModelAutoWith', { name: firstName })
-      : t('providersPage.form.testModelAutoEmpty');
+      : defaultTestModel
+        ? t('providersPage.form.testModelAutoWith', { name: defaultTestModel })
+        : t('providersPage.form.testModelAutoEmpty');
     const opts: Array<{ value: string; label: string }> = [{ value: '', label: autoLabel }];
     names.forEach((n) => opts.push({ value: n, label: n }));
     const tm = (form.testModel ?? '').trim();
@@ -356,7 +367,7 @@ export function BaseProviderForm({
       });
     }
     return opts;
-  }, [form.models, form.testModel, t]);
+  }, [defaultTestModel, form.models, form.testModel, t]);
 
   const openDiscovery = () => {
     setDiscoveryOpen(true);

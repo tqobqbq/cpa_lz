@@ -132,6 +132,8 @@ export type VisualConfigValues = {
   requestRetry: string;
   maxRetryCredentials: string;
   maxRetryInterval: string;
+  defaultTestModelCodex: string;
+  defaultTestModelClaude: string;
   disableCooling: boolean;
   disableImageGeneration: DisableImageGenerationMode;
   gptImage2BaseModel: string;
@@ -199,6 +201,8 @@ export const DEFAULT_VISUAL_VALUES: VisualConfigValues = {
   requestRetry: '',
   maxRetryCredentials: '',
   maxRetryInterval: '',
+  defaultTestModelCodex: '',
+  defaultTestModelClaude: '',
   disableCooling: false,
   disableImageGeneration: 'false',
   gptImage2BaseModel: '',

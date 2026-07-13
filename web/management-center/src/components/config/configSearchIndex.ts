@@ -148,6 +148,18 @@ export const CONFIG_FIELD_SEARCH_INDEX: ConfigFieldSearchEntry[] = [
     yamlKeys: ['max-retry-interval'],
   },
   {
+    fieldId: 'defaultTestModelCodex',
+    sectionId: 'network',
+    labelKey: L('sections.network.default_test_model_codex'),
+    yamlKeys: ['default-test-models'],
+  },
+  {
+    fieldId: 'defaultTestModelClaude',
+    sectionId: 'network',
+    labelKey: L('sections.network.default_test_model_claude'),
+    yamlKeys: ['default-test-models'],
+  },
+  {
     fieldId: 'authAutoRefreshWorkers',
     sectionId: 'network',
     labelKey: L('sections.network.auth_auto_refresh_workers'),

@@ -220,6 +220,12 @@ quota-exceeded:
   antigravity-credits: true # Whether to use credits as last-resort fallback when all free-tier auths are exhausted for Claude models
 
 # Routing strategy for selecting credentials when multiple match.
+# Default fallback models used by the management UI provider connectivity test
+# when an entry has no test model selected and no configured models.
+# default-test-models:
+#   codex: "gpt-5-codex"
+#   claude: "claude-sonnet-4"
+
 routing:
   strategy: "round-robin" # round-robin (default), fill-first, last-success
   # Parallel dispatch: when a credential keeps failing, later retry rounds may

@@ -153,6 +153,9 @@ type Config struct {
 	// Routing controls credential selection behavior.
 	Routing RoutingConfig `yaml:"routing" json:"routing"`
 
+	// DefaultTestModels configures fallback provider test models for management UI connectivity tests.
+	DefaultTestModels DefaultTestModelsConfig `yaml:"default-test-models,omitempty" json:"default-test-models,omitempty"`
+
 	// WebsocketAuth enables or disables authentication for the WebSocket API.
 	WebsocketAuth bool `yaml:"ws-auth" json:"ws-auth"`
 
@@ -448,6 +451,12 @@ type RoutingConfig struct {
 
 	// Rules prefer a provider when downstream request metadata matches the configured conditions.
 	Rules []RoutingRule `yaml:"rules,omitempty" json:"rules,omitempty"`
+}
+
+// DefaultTestModelsConfig stores management-center fallback test models by provider.
+type DefaultTestModelsConfig struct {
+	Codex  string `yaml:"codex,omitempty" json:"codex,omitempty"`
+	Claude string `yaml:"claude,omitempty" json:"claude,omitempty"`
 }
 
 // RoutingRule prefers one provider when the request metadata matches the configured conditions.
