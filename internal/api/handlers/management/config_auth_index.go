@@ -23,6 +23,11 @@ type codexKeyWithAuthIndex struct {
 	AuthIndex string `json:"auth-index,omitempty"`
 }
 
+type xaiKeyWithAuthIndex struct {
+	config.XAIKey
+	AuthIndex string `json:"auth-index,omitempty"`
+}
+
 type vertexCompatKeyWithAuthIndex struct {
 	config.VertexCompatKey
 	AuthIndex string `json:"auth-index,omitempty"`
@@ -107,6 +112,35 @@ func (h *Handler) geminiKeysWithAuthIndex() []geminiKeyWithAuthIndex {
 	return out
 }
 
+func (h *Handler) interactionsKeysWithAuthIndex() []geminiKeyWithAuthIndex {
+	if h == nil {
+		return nil
+	}
+	liveIndexByID := h.liveAuthIndexByID()
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.cfg == nil {
+		return nil
+	}
+
+	idGen := synthesizer.NewStableIDGenerator()
+	out := make([]geminiKeyWithAuthIndex, len(h.cfg.InteractionsKey))
+	for i := range h.cfg.InteractionsKey {
+		entry := h.cfg.InteractionsKey[i]
+		authIndex := ""
+		if key := strings.TrimSpace(entry.APIKey); key != "" {
+			id, _ := idGen.Next("gemini-interactions:apikey", key, entry.BaseURL)
+			authIndex = liveIndexByID[id]
+		}
+		out[i] = geminiKeyWithAuthIndex{
+			GeminiKey: entry,
+			AuthIndex: authIndex,
+		}
+	}
+	return out
+}
+
 func (h *Handler) claudeKeysWithAuthIndex() []claudeKeyWithAuthIndex {
 	if h == nil {
 		return nil
@@ -159,6 +193,35 @@ func (h *Handler) codexKeysWithAuthIndex() []codexKeyWithAuthIndex {
 		}
 		out[i] = codexKeyWithAuthIndex{
 			CodexKey:  entry,
+			AuthIndex: authIndex,
+		}
+	}
+	return out
+}
+
+func (h *Handler) xaiKeysWithAuthIndex() []xaiKeyWithAuthIndex {
+	if h == nil {
+		return nil
+	}
+	liveIndexByID := h.liveAuthIndexByID()
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.cfg == nil {
+		return nil
+	}
+
+	idGen := synthesizer.NewStableIDGenerator()
+	out := make([]xaiKeyWithAuthIndex, len(h.cfg.XAIKey))
+	for i := range h.cfg.XAIKey {
+		entry := h.cfg.XAIKey[i]
+		authIndex := ""
+		if key := strings.TrimSpace(entry.APIKey); key != "" {
+			id, _ := idGen.Next("xai:apikey", key, entry.BaseURL)
+			authIndex = liveIndexByID[id]
+		}
+		out[i] = xaiKeyWithAuthIndex{
+			XAIKey:    entry,
 			AuthIndex: authIndex,
 		}
 	}

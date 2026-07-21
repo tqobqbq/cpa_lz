@@ -949,7 +949,8 @@ func (m *Manager) candidateOrderingStrategy() string {
 }
 
 func (m *Manager) buildRetryCandidateChain(ctx context.Context, providers []string, model string, opts cliproxyexecutor.Options, round int) (*retryCandidateChain, error) {
-	candidates, versions, err := m.retryCandidates(ctx, providers, model, opts)
+	selectionModel := authSelectionModelFromOptions(opts, model)
+	candidates, versions, err := m.retryCandidates(ctx, providers, selectionModel, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -1329,11 +1330,12 @@ func (m *Manager) executeResponseRetryCandidate(ctx context.Context, candidate r
 	if candidate.executor == nil || candidate.auth == nil {
 		return cliproxyexecutor.Response{}, &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
+	routeModel := authSelectionModelFromOptions(opts, req.Model)
+	executionModel, restoreExecutionModel := executionModelForAuthSelection(opts, req.Model)
 	entry := logEntryWithRequestID(ctx)
-	debugLogAuthSelection(entry, candidate.auth, candidate.provider, req.Model)
-	publishSelectedAuthMetadata(opts.Metadata, candidate.auth.ID)
+	debugLogAuthSelection(entry, candidate.auth, candidate.provider, routeModel)
+	publishSelectedAuthMetadata(opts.Metadata, candidate.auth)
 
-	routeModel := req.Model
 	auth := candidate.auth
 	execCtx := m.executionContextForCandidate(ctx, candidate, round)
 	execCtx = contextWithRequestedModelAlias(execCtx, opts, routeModel)
@@ -1355,6 +1357,7 @@ func (m *Manager) executeResponseRetryCandidate(ctx context.Context, candidate r
 	}
 
 	var lastErr error
+	didRefreshOnUnauthorized := false
 	for _, upstreamModel := range models {
 		if m.executionResetChanged(signal) {
 			return cliproxyexecutor.Response{}, errExecutionReset
@@ -1362,6 +1365,9 @@ func (m *Manager) executeResponseRetryCandidate(ctx context.Context, candidate r
 		resultModel := m.stateModelForExecution(auth, routeModel, upstreamModel, pooled)
 		execReq := req
 		execReq.Model = upstreamModel
+		if restoreExecutionModel {
+			execReq.Model = executionModel
+		}
 		execOpts := opts
 		execReq, execOpts = applyRequestAfterAuthInterceptor(execCtx, candidate.executor, candidate.provider, execReq, execOpts, requestedModelAliasFromOptions(execOpts, routeModel))
 		var resp cliproxyexecutor.Response
@@ -1371,17 +1377,34 @@ func (m *Manager) executeResponseRetryCandidate(ctx context.Context, candidate r
 		} else {
 			resp, errExec = candidate.executor.Execute(execCtx, auth, execReq, execOpts)
 		}
-		result := Result{AuthID: auth.ID, AuthGeneration: auth.RuntimeGeneration, Provider: candidate.provider, Model: resultModel, Success: errExec == nil}
 		if errExec != nil {
 			if errCtx := execCtx.Err(); errCtx != nil {
 				return cliproxyexecutor.Response{}, errCtx
 			}
-			result.Error = &Error{Message: errExec.Error()}
-			if se, ok := errors.AsType[cliproxyexecutor.StatusError](errExec); ok && se != nil {
-				result.Error.HTTPStatus = se.StatusCode()
+			if refreshed, okRefresh := m.tryRefreshAfterUnauthorized(execCtx, auth, errExec, didRefreshOnUnauthorized); okRefresh {
+				auth = refreshed
+				didRefreshOnUnauthorized = true
+				if countTokens {
+					resp, errExec = candidate.executor.CountTokens(execCtx, auth, execReq, execOpts)
+				} else {
+					resp, errExec = candidate.executor.Execute(execCtx, auth, execReq, execOpts)
+				}
+				if errExec != nil {
+					if errCtx := execCtx.Err(); errCtx != nil {
+						return cliproxyexecutor.Response{}, errCtx
+					}
+				}
 			}
+		}
+		result := Result{AuthID: auth.ID, AuthGeneration: auth.RuntimeGeneration, Provider: candidate.provider, Model: resultModel, Success: errExec == nil}
+		if errExec != nil {
+			result.Error = resultErrorFromError(errExec)
 			result.RetryAfter = retryAfterFromError(errExec)
-			m.MarkResult(execCtx, result)
+			if countTokens && isCountTokensEndpointNotFoundError(errExec, execReq.Model) {
+				m.recordAvailabilityNeutralResult(execCtx, result)
+			} else {
+				m.MarkResult(execCtx, result)
+			}
 			lastErr = errExec
 			if m.executionResetChanged(signal) {
 				return cliproxyexecutor.Response{}, errExecutionReset
@@ -1389,7 +1412,7 @@ func (m *Manager) executeResponseRetryCandidate(ctx context.Context, candidate r
 			// Request-shape failures will not succeed on another pooled model
 			// (or another credential); everything else falls through to the
 			// next upstream model in the alias pool.
-			if isRequestInvalidError(errExec) {
+			if isRequestScopedResultError(result.Error) || isRequestInvalidError(errExec) {
 				return cliproxyexecutor.Response{}, errExec
 			}
 			continue
@@ -1414,11 +1437,11 @@ func (m *Manager) executeStreamRetryCandidateWithCompletion(ctx context.Context,
 	if candidate.executor == nil || candidate.auth == nil {
 		return nil, &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
+	routeModel := authSelectionModelFromOptions(opts, req.Model)
 	entry := logEntryWithRequestID(ctx)
-	debugLogAuthSelection(entry, candidate.auth, candidate.provider, req.Model)
-	publishSelectedAuthMetadata(opts.Metadata, candidate.auth.ID)
+	debugLogAuthSelection(entry, candidate.auth, candidate.provider, routeModel)
+	publishSelectedAuthMetadata(opts.Metadata, candidate.auth)
 
-	routeModel := req.Model
 	auth := candidate.auth
 	execCtx := m.executionContextForCandidate(ctx, candidate, round)
 
