@@ -326,12 +326,13 @@ func TestApplyCodexWebsocketHeadersPassesThroughClientIdentityHeaders(t *testing
 		Metadata: map[string]any{"email": "user@example.com"},
 	}
 	ctx := contextWithGinHeaders(map[string]string{
-		"Originator":            "Codex Desktop",
-		"User-Agent":            "codex_cli_rs/0.1.0",
-		"Version":               "0.115.0-alpha.27",
-		"X-Codex-Turn-Metadata": `{"turn_id":"turn-1"}`,
-		"X-Client-Request-Id":   "019d2233-e240-7162-992d-38df0a2a0e0d",
-		"session-id":            "legacy-session",
+		"Originator":             "Codex Desktop",
+		"User-Agent":             "codex_cli_rs/0.1.0",
+		"Version":                "0.115.0-alpha.27",
+		codexResponsesLiteHeader: "true",
+		"X-Codex-Turn-Metadata":  `{"turn_id":"turn-1"}`,
+		"X-Client-Request-Id":    "019d2233-e240-7162-992d-38df0a2a0e0d",
+		"session-id":             "legacy-session",
 	})
 
 	headers := applyCodexWebsocketHeaders(ctx, http.Header{}, auth, "", nil)
@@ -344,6 +345,9 @@ func TestApplyCodexWebsocketHeadersPassesThroughClientIdentityHeaders(t *testing
 	}
 	if got := headers.Get("Version"); got != "0.115.0-alpha.27" {
 		t.Fatalf("Version = %s, want %s", got, "0.115.0-alpha.27")
+	}
+	if got := headers.Get(codexResponsesLiteHeader); got != "true" {
+		t.Fatalf("%s = %s, want true", codexResponsesLiteHeader, got)
 	}
 	if got := headers.Get("X-Codex-Turn-Metadata"); got != `{"turn_id":"turn-1"}` {
 		t.Fatalf("X-Codex-Turn-Metadata = %s, want %s", got, `{"turn_id":"turn-1"}`)
@@ -402,6 +406,9 @@ func TestApplyCodexWebsocketHeadersUsesConfigDefaultsForOAuth(t *testing.T) {
 	}
 	if got := headers.Get("OpenAI-Beta"); got != codexResponsesWebsocketBetaHeaderValue {
 		t.Fatalf("OpenAI-Beta = %s, want %s", got, codexResponsesWebsocketBetaHeaderValue)
+	}
+	if got := headers.Get(codexResponsesLiteHeader); got != "" {
+		t.Fatalf("%s = %q, want empty", codexResponsesLiteHeader, got)
 	}
 }
 
@@ -817,10 +824,11 @@ func TestApplyCodexHeadersPassesThroughClientIdentityHeaders(t *testing.T) {
 		Metadata: map[string]any{"email": "user@example.com"},
 	}
 	req = req.WithContext(contextWithGinHeaders(map[string]string{
-		"Originator":            "Codex Desktop",
-		"Version":               "0.115.0-alpha.27",
-		"X-Codex-Turn-Metadata": `{"turn_id":"turn-1"}`,
-		"X-Client-Request-Id":   "019d2233-e240-7162-992d-38df0a2a0e0d",
+		"Originator":             "Codex Desktop",
+		"Version":                "0.115.0-alpha.27",
+		codexResponsesLiteHeader: "true",
+		"X-Codex-Turn-Metadata":  `{"turn_id":"turn-1"}`,
+		"X-Client-Request-Id":    "019d2233-e240-7162-992d-38df0a2a0e0d",
 	}))
 
 	applyCodexHeaders(req, auth, "oauth-token", true, nil)
@@ -830,6 +838,9 @@ func TestApplyCodexHeadersPassesThroughClientIdentityHeaders(t *testing.T) {
 	}
 	if got := req.Header.Get("Version"); got != "0.115.0-alpha.27" {
 		t.Fatalf("Version = %s, want %s", got, "0.115.0-alpha.27")
+	}
+	if got := req.Header.Get(codexResponsesLiteHeader); got != "true" {
+		t.Fatalf("%s = %s, want true", codexResponsesLiteHeader, got)
 	}
 	if got := req.Header.Get("X-Codex-Turn-Metadata"); got != `{"turn_id":"turn-1"}` {
 		t.Fatalf("X-Codex-Turn-Metadata = %s, want %s", got, `{"turn_id":"turn-1"}`)
@@ -855,6 +866,9 @@ func TestApplyCodexHeadersDoesNotInjectClientOnlyHeadersByDefault(t *testing.T) 
 	}
 	if got := req.Header.Get("X-Client-Request-Id"); got != "" {
 		t.Fatalf("X-Client-Request-Id = %q, want empty", got)
+	}
+	if got := req.Header.Get(codexResponsesLiteHeader); got != "" {
+		t.Fatalf("%s = %q, want empty", codexResponsesLiteHeader, got)
 	}
 }
 

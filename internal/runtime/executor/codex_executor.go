@@ -37,6 +37,7 @@ const (
 	codexUserAgent             = "codex-tui/0.135.0 (Mac OS 26.5.0; arm64) iTerm.app/3.6.10 (codex-tui; 0.135.0)"
 	codexOriginator            = "codex-tui"
 	codexDefaultImageToolModel = "gpt-image-2"
+	codexResponsesLiteHeader   = "X-OpenAI-Internal-Codex-Responses-Lite"
 )
 
 var dataTag = []byte("data:")
@@ -1704,6 +1705,7 @@ func applyCodexHeadersFromSources(r *http.Request, auth *cliproxyauth.Auth, toke
 	if ginHeaders != nil && ginHeaders.Get("X-Codex-Beta-Features") != "" {
 		r.Header.Set("X-Codex-Beta-Features", ginHeaders.Get("X-Codex-Beta-Features"))
 	}
+	misc.EnsureHeader(r.Header, ginHeaders, codexResponsesLiteHeader, "")
 	misc.EnsureHeader(r.Header, ginHeaders, "Version", "")
 	misc.EnsureHeader(r.Header, ginHeaders, "X-Codex-Turn-Metadata", "")
 	misc.EnsureHeader(r.Header, ginHeaders, "X-Client-Request-Id", "")

@@ -915,6 +915,7 @@ func applyCodexWebsocketHeaders(ctx context.Context, headers http.Header, auth *
 	isAPIKey := codexAuthUsesAPIKey(auth)
 	cfgUserAgent, cfgBetaFeatures := codexHeaderDefaults(cfg, auth)
 	ensureHeaderWithPriority(headers, ginHeaders, "x-codex-beta-features", cfgBetaFeatures, "")
+	misc.EnsureHeader(headers, ginHeaders, codexResponsesLiteHeader, "")
 	misc.EnsureHeader(headers, ginHeaders, "x-codex-turn-state", "")
 	misc.EnsureHeader(headers, ginHeaders, "x-codex-turn-metadata", "")
 	misc.EnsureHeader(headers, ginHeaders, "x-client-request-id", "")
