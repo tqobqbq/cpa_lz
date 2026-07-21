@@ -5,11 +5,13 @@
 import { useCallback, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { AuthFileItem } from '@/types';
-import { useQuotaStore } from '@/stores';
+import {
+  captureQuotaCacheGeneration,
+  commitIfQuotaCacheCurrent,
+  useQuotaStore,
+} from '@/stores';
 import { getStatusFromError } from '@/utils/quota';
 import type { QuotaConfig } from './quotaConfigs';
-
-type QuotaScope = 'page' | 'all';
 
 type QuotaUpdater<T> = T | ((prev: T) => T);
 
@@ -34,15 +36,12 @@ export function useQuotaLoader<TState, TData>(config: QuotaConfig<TState, TData>
   const requestIdRef = useRef(0);
 
   const loadQuota = useCallback(
-    async (
-      targets: AuthFileItem[],
-      scope: QuotaScope,
-      setLoading: (loading: boolean, scope?: QuotaScope | null) => void
-    ) => {
+    async (targets: AuthFileItem[], setLoading: (loading: boolean) => void) => {
       if (loadingRef.current) return;
       loadingRef.current = true;
       const requestId = ++requestIdRef.current;
-      setLoading(true, scope);
+      const cacheGeneration = captureQuotaCacheGeneration();
+      setLoading(true);
 
       try {
         if (targets.length === 0) return;
@@ -70,19 +69,21 @@ export function useQuotaLoader<TState, TData>(config: QuotaConfig<TState, TData>
 
         if (requestId !== requestIdRef.current) return;
 
-        setQuota((prev) => {
-          const nextState = { ...prev };
-          results.forEach((result) => {
-            if (result.status === 'success') {
-              nextState[result.name] = config.buildSuccessState(result.data as TData);
-            } else {
-              nextState[result.name] = config.buildErrorState(
-                result.error || t('common.unknown_error'),
-                result.errorStatus
-              );
-            }
+        commitIfQuotaCacheCurrent(cacheGeneration, () => {
+          setQuota((prev) => {
+            const nextState = { ...prev };
+            results.forEach((result) => {
+              if (result.status === 'success') {
+                nextState[result.name] = config.buildSuccessState(result.data as TData);
+              } else {
+                nextState[result.name] = config.buildErrorState(
+                  result.error || t('common.unknown_error'),
+                  result.errorStatus
+                );
+              }
+            });
+            return nextState;
           });
-          return nextState;
         });
       } finally {
         if (requestId === requestIdRef.current) {

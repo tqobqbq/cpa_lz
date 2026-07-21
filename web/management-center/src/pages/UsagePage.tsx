@@ -383,6 +383,7 @@ export function UsagePage() {
           geminiKeys={config?.geminiApiKeys || []}
           claudeConfigs={config?.claudeApiKeys || []}
           codexConfigs={config?.codexApiKeys || []}
+          xaiConfigs={config?.xaiApiKeys || []}
           vertexConfigs={config?.vertexApiKeys || []}
           openaiProviders={config?.openaiCompatibility || []}
           modelPrices={modelPrices}
@@ -396,6 +397,7 @@ export function UsagePage() {
         geminiKeys={config?.geminiApiKeys || []}
         claudeConfigs={config?.claudeApiKeys || []}
         codexConfigs={config?.codexApiKeys || []}
+        xaiConfigs={config?.xaiApiKeys || []}
         vertexConfigs={config?.vertexApiKeys || []}
         openaiProviders={config?.openaiCompatibility || []}
         modelPrices={modelPrices}

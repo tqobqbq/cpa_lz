@@ -16,44 +16,6 @@ export const configApi = {
   },
 
   /**
-   * 获取原始配置（不做转换）
-   */
-  getRawConfig: () => apiClient.get('/config'),
-
-  /**
-   * 更新 Debug 模式
-   */
-  updateDebug: (enabled: boolean) => apiClient.put('/debug', { value: enabled }),
-
-  /**
-   * 更新代理 URL
-   */
-  updateProxyUrl: (proxyUrl: string) => apiClient.put('/proxy-url', { value: proxyUrl }),
-
-  /**
-   * 清除代理 URL
-   */
-  clearProxyUrl: () => apiClient.delete('/proxy-url'),
-
-  /**
-   * 更新重试次数
-   */
-  updateRequestRetry: (retryCount: number) =>
-    apiClient.put('/request-retry', { value: retryCount }),
-
-  /**
-   * 配额回退：切换项目
-   */
-  updateSwitchProject: (enabled: boolean) =>
-    apiClient.put('/quota-exceeded/switch-project', { value: enabled }),
-
-  /**
-   * 配额回退：切换预览模型
-   */
-  updateSwitchPreviewModel: (enabled: boolean) =>
-    apiClient.put('/quota-exceeded/switch-preview-model', { value: enabled }),
-
-  /**
    * 请求日志开关
    */
   updateRequestLog: (enabled: boolean) => apiClient.put('/request-log', { value: enabled }),

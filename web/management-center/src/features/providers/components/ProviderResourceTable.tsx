@@ -27,6 +27,7 @@ import {
 import type { OpenAIProviderConfig } from '@/types';
 import type { StatusBarData } from '@/utils/recentRequests';
 import type { ProviderResource } from '../types';
+import { isMultiProtocolSponsorBrand } from '../sponsorDefinitions';
 import styles from './ProviderResourceTable.module.scss';
 import statusBarStyles from './providerStatusBar.module.scss';
 
@@ -44,7 +45,7 @@ interface ProviderResourceTableProps {
 const columnWidths = ['180px', '220px', '72px', '138px', '174px', '176px'];
 
 const isSponsorResource = (resource: ProviderResource): boolean =>
-  resource.brand === 'apikeyFun' || resource.brand === 'code0';
+  isMultiProtocolSponsorBrand(resource.brand);
 
 const getUsageProvider = (resource: ProviderResource): string =>
   resource.brand === 'claudeApi' ? 'claude' : resource.brand;
@@ -128,7 +129,7 @@ export function ProviderResourceTable({
         renderMetric('models', t('providersPage.table.metrics.models'), r.modelCount),
         renderMetric('headers', t('providersPage.table.metrics.headers'), r.headerCount)
       );
-      if (r.brand === 'codex' && r.flags.websockets) {
+      if ((r.brand === 'codex' || r.brand === 'xai') && r.flags.websockets) {
         items.push(renderFlagTag('ws', t('providersPage.table.websocketsTag')));
       }
       if (r.brand === 'claude' && r.flags.cloakEnabled) {

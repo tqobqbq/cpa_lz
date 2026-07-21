@@ -30,6 +30,7 @@ export interface CredentialStatsCardProps {
   geminiKeys: GeminiKeyConfig[];
   claudeConfigs: ProviderKeyConfig[];
   codexConfigs: ProviderKeyConfig[];
+  xaiConfigs: ProviderKeyConfig[];
   vertexConfigs: ProviderKeyConfig[];
   openaiProviders: OpenAIProviderConfig[];
   modelPrices: Record<string, ModelPrice>;
@@ -42,6 +43,7 @@ export function CredentialStatsCard({
   geminiKeys,
   claudeConfigs,
   codexConfigs,
+  xaiConfigs,
   vertexConfigs,
   openaiProviders,
   modelPrices,
@@ -86,12 +88,15 @@ export function CredentialStatsCard({
         geminiApiKeys: geminiKeys,
         claudeApiKeys: claudeConfigs,
         codexApiKeys: codexConfigs,
+        xaiApiKeys: xaiConfigs,
         vertexApiKeys: vertexConfigs,
         openaiCompatibility: openaiProviders,
       }),
-    [claudeConfigs, codexConfigs, geminiKeys, openaiProviders, vertexConfigs]
+    [claudeConfigs, codexConfigs, geminiKeys, openaiProviders, vertexConfigs, xaiConfigs]
   );
 
+  // Usage tables can contain many rows; preserve this explicit cache across renders.
+  // eslint-disable-next-line react-hooks/preserve-manual-memoization
   const rows = useMemo(() => {
     if (!usage) return [];
     const summaryEntries = collectUsage20mSummaryEntries(usage);

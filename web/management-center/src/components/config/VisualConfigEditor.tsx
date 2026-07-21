@@ -467,6 +467,10 @@ export function VisualConfigEditor({
         value: 'chat',
         label: t('config_management.visual.sections.network.disable_image_generation_chat'),
       },
+      {
+        value: 'passthrough',
+        label: t('config_management.visual.sections.network.disable_image_generation_passthrough'),
+      },
     ],
     [t]
   );
@@ -479,7 +483,7 @@ export function VisualConfigEditor({
           ...outputFilter,
         },
       }),
-    [onChange, values.outputFilter]
+    [onChange, values]
   );
   const handleOutputFilterProviderChange = useCallback(
     (providerId: string, patch: Partial<(typeof values.outputFilter.providers)[number]>) =>
@@ -491,7 +495,7 @@ export function VisualConfigEditor({
           ),
         },
       }),
-    [onChange, values.outputFilter]
+    [onChange, values]
   );
   const handleAddOutputFilterProvider = useCallback(
     () =>
@@ -1457,6 +1461,8 @@ export function VisualConfigEditor({
                     <Input
                       label={t('config_management.visual.sections.system.redis_usage_retention')}
                       type="number"
+                      min={1}
+                      max={3600}
                       placeholder="60"
                       value={values.redisUsageQueueRetentionSeconds}
                       onChange={(e) =>

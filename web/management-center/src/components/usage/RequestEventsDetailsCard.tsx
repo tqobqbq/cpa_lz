@@ -84,6 +84,7 @@ export interface RequestEventsDetailsCardProps {
   geminiKeys: GeminiKeyConfig[];
   claudeConfigs: ProviderKeyConfig[];
   codexConfigs: ProviderKeyConfig[];
+  xaiConfigs: ProviderKeyConfig[];
   vertexConfigs: ProviderKeyConfig[];
   openaiProviders: OpenAIProviderConfig[];
   modelPrices: Record<string, ModelPrice>;
@@ -128,6 +129,7 @@ export function RequestEventsDetailsCard({
   geminiKeys,
   claudeConfigs,
   codexConfigs,
+  xaiConfigs,
   vertexConfigs,
   openaiProviders,
   modelPrices,
@@ -177,10 +179,11 @@ export function RequestEventsDetailsCard({
         geminiApiKeys: geminiKeys,
         claudeApiKeys: claudeConfigs,
         codexApiKeys: codexConfigs,
+        xaiApiKeys: xaiConfigs,
         vertexApiKeys: vertexConfigs,
         openaiCompatibility: openaiProviders,
       }),
-    [claudeConfigs, codexConfigs, geminiKeys, openaiProviders, vertexConfigs]
+    [claudeConfigs, codexConfigs, geminiKeys, openaiProviders, vertexConfigs, xaiConfigs]
   );
 
   const rows = useMemo<RequestEventRow[]>(() => {

@@ -20,6 +20,7 @@ import { SponsorQuickStartPanel } from './components/SponsorQuickStartPanel';
 import { ProviderSheet, type ProviderSheetHandle } from './sheets/ProviderSheet';
 import { APIKEY_FUN_DISPLAY_NAME } from './sponsor';
 import { isMultiProtocolSponsorBrand } from './sponsorDefinitions';
+import { isSponsorPartialMutationError } from './sponsorMutationRecovery';
 import { useProviderWorkbench } from './useProviderWorkbench';
 import {
   getProviderFilterState,
@@ -158,7 +159,11 @@ export function ProvidersWorkbenchPage({ fixedBrand }: ProvidersWorkbenchPagePro
 
   useHeaderRefresh(handleRefresh, isCurrentLayer);
 
-  const disableMutations = connectionStatus !== 'connected' || workbench.mutating;
+  const disableMutations =
+    connectionStatus !== 'connected' ||
+    workbench.mutating ||
+    workbench.isFetching ||
+    workbench.isError;
 
   const persistUiState = useCallback(
     (updater: (prev: ProvidersWorkbenchUiState) => ProvidersWorkbenchUiState) => {
@@ -247,19 +252,14 @@ export function ProvidersWorkbenchPage({ fixedBrand }: ProvidersWorkbenchPagePro
     }
 
     const sorted = [...arr].sort((a, b) => {
-      let diff = 0;
-      if (providerSortBy === 'name') {
-        diff = getResourceSortName(a).localeCompare(getResourceSortName(b));
-      } else if (providerSortBy === 'priority') {
-        diff = a.priority - b.priority;
-      } else {
-        diff =
-          getResourceRecentSuccess(a, usageByProvider) -
-          getResourceRecentSuccess(b, usageByProvider);
-      }
-      if (diff === 0) {
-        diff = a.originalIndex - b.originalIndex;
-      }
+      const sortDiff =
+        providerSortBy === 'name'
+          ? getResourceSortName(a).localeCompare(getResourceSortName(b))
+          : providerSortBy === 'priority'
+            ? a.priority - b.priority
+            : getResourceRecentSuccess(a, usageByProvider) -
+              getResourceRecentSuccess(b, usageByProvider);
+      const diff = sortDiff || a.originalIndex - b.originalIndex;
       return providerSortDir === 'asc' ? diff : -diff;
     });
 
@@ -290,29 +290,22 @@ export function ProvidersWorkbenchPage({ fixedBrand }: ProvidersWorkbenchPagePro
   ]);
 
   const totalResources = useMemo(
-    () =>
-      groups.reduce((sum, g) => sum + g.resources.filter((r) => !r.flags.isPlaceholder).length, 0),
+    () => groups.reduce((sum, g) => sum + g.resources.length, 0),
     [groups]
   );
 
   const totalActive = useMemo(
-    () =>
-      groups.reduce(
-        (sum, g) => sum + g.resources.filter((r) => !r.disabled && !r.flags.isPlaceholder).length,
-        0
-      ),
+    () => groups.reduce((sum, g) => sum + g.resources.filter((r) => !r.disabled).length, 0),
     [groups]
   );
 
   const providerFamilies = useMemo(
-    () => groups.filter((g) => g.resources.some((r) => !r.flags.isPlaceholder)).length,
+    () => groups.filter((g) => g.resources.length > 0).length,
     [groups]
   );
   const quickStartResource = useMemo(
     () =>
-      fixedBrand === 'apikeyFun' && activeGroup
-        ? (activeGroup.resources.find((r) => !r.flags.isPlaceholder) ?? null)
-        : null,
+      fixedBrand === 'apikeyFun' && activeGroup ? (activeGroup.resources[0] ?? null) : null,
     [activeGroup, fixedBrand]
   );
 
@@ -325,6 +318,9 @@ export function ProvidersWorkbenchPage({ fixedBrand }: ProvidersWorkbenchPagePro
         ? APIKEY_FUN_DISPLAY_NAME
         : t('nav.quick_start')
       : undefined;
+  const errorBanner = workbench.errorMessage ? (
+    <div className="error-box">{workbench.errorMessage}</div>
+  ) : null;
 
   const openCreate = useCallback(() => {
     const brand = activeBrand;
@@ -386,6 +382,10 @@ export function ProvidersWorkbenchPage({ fixedBrand }: ProvidersWorkbenchPagePro
             await workbench.deleteProvider(resource);
             showNotification(t('providersPage.toast.deleted'), 'success');
           } catch (err) {
+            if (isSponsorPartialMutationError(err)) {
+              showNotification(t('providersPage.sponsor.partialMutationWarning'), 'warning');
+              return;
+            }
             const msg = err instanceof Error ? err.message : String(err);
             showNotification(`${t('notification.delete_failed')}: ${msg}`, 'error');
           }
@@ -404,6 +404,10 @@ export function ProvidersWorkbenchPage({ fixedBrand }: ProvidersWorkbenchPagePro
           'success'
         );
       } catch (err) {
+        if (isSponsorPartialMutationError(err)) {
+          showNotification(t('providersPage.sponsor.partialMutationWarning'), 'warning');
+          return;
+        }
         const msg = err instanceof Error ? err.message : String(err);
         showNotification(`${t('providersPage.toast.toggleFailed')}: ${msg}`, 'error');
       }
@@ -450,6 +454,7 @@ export function ProvidersWorkbenchPage({ fixedBrand }: ProvidersWorkbenchPagePro
           showNewAction={!fixedBrand}
           showSummary={fixedBrand !== 'apikeyFun'}
         />
+        {errorBanner}
       </div>
     );
   }
@@ -471,6 +476,8 @@ export function ProvidersWorkbenchPage({ fixedBrand }: ProvidersWorkbenchPagePro
         onRefresh={() => void handleRefresh()}
         onNew={openCreate}
       />
+
+      {errorBanner}
 
       <div className={`${styles.layout} ${fixedBrand ? styles.layoutSingle : ''}`.trim()}>
         {!fixedBrand ? (

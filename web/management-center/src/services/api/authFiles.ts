@@ -17,6 +17,7 @@ export type AuthFileFieldsPatch = {
   headers?: Record<string, string>;
   priority?: number;
   websockets?: boolean;
+  using_api?: boolean;
   note?: string;
 };
 type AuthFileBatchFailure = { name: string; error: string };
@@ -328,7 +329,9 @@ const normalizeOauthExcludedModels = (payload: unknown): Record<string, string[]
   return result;
 };
 
-const normalizeOauthModelAlias = (payload: unknown): Record<string, OAuthModelAliasEntry[]> => {
+export const normalizeOauthModelAlias = (
+  payload: unknown
+): Record<string, OAuthModelAliasEntry[]> => {
   if (!payload || typeof payload !== 'object') return {};
 
   const record = payload as Record<string, unknown>;
@@ -352,7 +355,13 @@ const normalizeOauthModelAlias = (payload: unknown): Record<string, OAuthModelAl
         const alias = String(entry.alias ?? '').trim();
         if (!name || !alias) return null;
         const fork = entry.fork === true;
-        return fork ? { name, alias, fork } : { name, alias };
+        const forceMappingValue = entry['force-mapping'] ?? entry.forceMapping;
+        const normalizedEntry: OAuthModelAliasEntry = { name, alias };
+        if (fork) normalizedEntry.fork = true;
+        if (typeof forceMappingValue === 'boolean') {
+          normalizedEntry.forceMapping = forceMappingValue;
+        }
+        return normalizedEntry;
       })
       .filter(Boolean)
       .forEach((entry) => {
@@ -370,6 +379,21 @@ const normalizeOauthModelAlias = (payload: unknown): Record<string, OAuthModelAl
 
   return result;
 };
+
+export const serializeOauthModelAliases = (
+  aliases: OAuthModelAliasEntry[]
+): Array<Record<string, unknown>> =>
+  aliases.map((entry) => {
+    const payload: Record<string, unknown> = {
+      name: entry.name,
+      alias: entry.alias,
+    };
+    if (entry.fork) payload.fork = true;
+    if (typeof entry.forceMapping === 'boolean') {
+      payload['force-mapping'] = entry.forceMapping;
+    }
+    return payload;
+  });
 
 const OAUTH_MODEL_ALIAS_ENDPOINT = '/oauth-model-alias';
 
@@ -435,7 +459,6 @@ export const authFilesApi = {
   saveJsonObject: (name: string, json: Record<string, unknown>) =>
     saveAuthFileText(name, JSON.stringify(json)),
 
-
   // OAuth 排除模型
   async getOauthExcludedModels(): Promise<Record<string, string[]>> {
     const data = await apiClient.get('/oauth-excluded-models');
@@ -468,7 +491,7 @@ export const authFilesApi = {
       normalizeOauthModelAlias({ [normalizedChannel]: aliases })[normalizedChannel] ?? [];
     await apiClient.patch(OAUTH_MODEL_ALIAS_ENDPOINT, {
       channel: normalizedChannel,
-      aliases: normalizedAliases,
+      aliases: serializeOauthModelAliases(normalizedAliases),
     });
   },
 
